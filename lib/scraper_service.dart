@@ -7,10 +7,10 @@ import 'package:flutter/foundation.dart';
 class ScraperService {
   final String appGroupId = 'group.com.vincent.watbal';
 
-  /// Scrapes the balance and updates the Home Widget.
-  /// Returns the balance string or throws an error.
   Future<String> fetchBalance(String cookieHeader) async {
     try {
+      // --- STEP 1: GET DASHBOARD (To get the token) ---
+      print("Fetching Dashboard to grab fresh token...");
       final dashboardRes = await http.get(
         Uri.parse("https://secure.touchnet.net/C22566_oneweb/Account/Dashboard"),
         headers: {
@@ -18,12 +18,34 @@ class ScraperService {
           "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         },
       );
+      print("Dashboard Status: ${dashboardRes.statusCode}");
 
       var doc = parse(dashboardRes.body);
       var token = doc.querySelector('input[name="__RequestVerificationToken"]')?.attributes['value'];
 
-      if (token == null) throw Exception("Session Expired");
+      if (token == null) {
+        print("Error: Could not find token in HTML.");
+        throw Exception("Session Expired");
+      }
+      print("Verification Token parsed: ${token.substring(0, 15)}...");
 
+      // --- STEP 2: KEEP ALIVE (Using the parsed token) ---
+      print("Sending KeepAlive with parsed token...");
+      final keepAliveRes = await http.post(
+        Uri.parse("https://secure.touchnet.net/C22566_oneweb/Layout/KeepAlive"),
+        headers: {
+          "Cookie": cookieHeader,
+          "Accept": "*/*",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        },
+        body: {"__RequestVerificationToken": token}, // Using the token we just parsed
+      );
+      print("KeepAlive Status: ${keepAliveRes.statusCode}");
+
+      // --- STEP 3: FETCH BALANCES ---
+      print("Requesting Balances...");
       final balanceRes = await http.post(
         Uri.parse("https://secure.touchnet.net/C22566_oneweb/Deposit/Home/Balances"),
         headers: {
@@ -35,7 +57,9 @@ class ScraperService {
         },
         body: {"__RequestVerificationToken": token},
       );
+      print("Balances Status: ${balanceRes.statusCode}");
 
+      // --- STEP 4: PARSING ---
       var balanceDoc = parse(balanceRes.body);
       String? foundAmount;
       var allCells = balanceDoc.querySelectorAll('td, div, span');
@@ -54,12 +78,14 @@ class ScraperService {
       }
 
       if (foundAmount != null) {
+        print("Success! Found Balance: $foundAmount");
         await _updateWidget(foundAmount);
         return foundAmount;
       } else {
         throw Exception("Structure Error");
       }
     } catch (e) {
+      print("Scraper Error: $e");
       rethrow;
     }
   }
