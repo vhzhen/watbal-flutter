@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:watbal/app_theme.dart';
 import 'package:watbal/balance_display.dart';
 import 'package:watbal/scraper_service.dart';
+import 'package:watbal/settings_sheet.dart';
 
 /// Shows the fetched balance. Refresh re-scrapes with the saved session;
 /// if that fails, [onSessionLost] sends the user back to the loading page
@@ -51,13 +53,18 @@ class _DisplayPageState extends State<DisplayPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Text("WatBal", style: TextStyle(fontWeight: FontWeight.bold)),
-        centerTitle: true,
-        elevation: 0,
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => showSettingsDialog(
+              context,
+              controller: ThemeScope.read(context),
+              onSignOut: widget.onSessionLost,
+            ),
+          ),
+        ],
       ),
       body: Center(
         child: Column(
@@ -66,13 +73,9 @@ class _DisplayPageState extends State<DisplayPage> {
             BalanceDisplay(balance: _balance),
             const SizedBox(height: 40),
             _refreshing
-                ? const CircularProgressIndicator(color: Colors.blueAccent)
+                ? const CircularProgressIndicator()
                 : ElevatedButton(
                     onPressed: _refresh,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blueAccent,
-                      foregroundColor: Colors.white,
-                    ),
                     child: const Text("Refresh"),
                   ),
           ],

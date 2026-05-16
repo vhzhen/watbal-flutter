@@ -7,19 +7,20 @@ class BalanceDisplay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Column(
       children: [
-        const Text(
+        Text(
           "Current Balance",
-          style: TextStyle(color: Colors.grey, fontSize: 16),
+          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 16),
         ),
         const SizedBox(height: 8),
         Text(
           balance,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 48,
             fontWeight: FontWeight.bold,
-            color: Colors.blueAccent,
+            color: scheme.primary,
           ),
         ),
       ],

@@ -38,7 +38,7 @@ class _LoadingPageState extends State<LoadingPage> {
     }
   }
 
-  Future<void> _fetch(String cookies) async {
+  Future<void> _fetch(String cookies, {bool fromLogin = false}) async {
     setState(() {
       _busy = true;
       _status = "Fetching your balance…";
@@ -48,9 +48,20 @@ class _LoadingPageState extends State<LoadingPage> {
       final result = await _scraper.fetchBalance(cookies);
       if (mounted) widget.onLoaded(result);
     } catch (e) {
-      // Any failure here means the saved session can no longer reach the
-      // balance, so send the user back through login.
-      _promptLogin(expired: true);
+      if (!mounted) return;
+      if (fromLogin) {
+        // Hard stop: the user just completed a real login but the scrape
+        // still failed. Re-opening the popup here would spin, so surface
+        // the problem and let the user retry by hand instead.
+        setState(() {
+          _busy = false;
+          _status =
+              "Signed in, but couldn't load your balance. Tap to try again.";
+        });
+      } else {
+        // Stale saved session — send the user through login once.
+        _promptLogin(expired: true);
+      }
     }
   }
 
@@ -79,7 +90,7 @@ class _LoadingPageState extends State<LoadingPage> {
     );
 
     if (header != null) {
-      _fetch(header);
+      _fetch(header, fromLogin: true);
     } else if (mounted) {
       // User backed out of the popup — let them retry manually.
       setState(() {
@@ -91,40 +102,34 @@ class _LoadingPageState extends State<LoadingPage> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Text("WatBal", style: TextStyle(fontWeight: FontWeight.bold)),
-        centerTitle: true,
-        elevation: 0,
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
       ),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             if (_busy)
-              const CircularProgressIndicator(color: Colors.blueAccent)
+              const CircularProgressIndicator()
             else
-              const Icon(Icons.lock_outline, size: 48, color: Colors.grey),
+              Icon(Icons.lock_outline,
+                  size: 48, color: scheme.onSurfaceVariant),
             const SizedBox(height: 24),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Text(
                 _status,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.grey, fontSize: 16),
+                style: TextStyle(
+                    color: scheme.onSurfaceVariant, fontSize: 16),
               ),
             ),
             if (!_busy) ...[
               const SizedBox(height: 24),
               ElevatedButton(
                 onPressed: () => _promptLogin(),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
-                  foregroundColor: Colors.white,
-                ),
                 child: const Text("Sign in"),
               ),
             ],

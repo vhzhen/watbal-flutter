@@ -1,11 +1,81 @@
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' show parse;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:flutter/foundation.dart';
+import 'package:watbal/transaction.dart';
 
 class ScraperService {
   final String appGroupId = 'group.com.vincent.watbal';
+
+  static const _userAgent =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+  static const _base = "https://secure.touchnet.net/C22566_oneweb";
+
+  String _fmtDate(DateTime d) =>
+      "${d.month.toString().padLeft(2, '0')}/"
+      "${d.day.toString().padLeft(2, '0')}/${d.year}";
+
+  /// GETs the Dashboard and parses the form-field __RequestVerificationToken
+  /// (distinct from the cookie of the same prefix). Throws "Session Expired"
+  /// when the token is gone, matching fetchBalance's behaviour.
+  Future<String> _verificationToken(String cookieHeader) async {
+    final res = await http.get(
+      Uri.parse("$_base/Account/Dashboard"),
+      headers: {"Cookie": cookieHeader, "User-Agent": _userAgent},
+    );
+    final token = parse(res.body)
+        .querySelector('input[name="__RequestVerificationToken"]')
+        ?.attributes['value'];
+    if (token == null) throw Exception("Session Expired");
+    return token;
+  }
+
+  /// POSTs TransactionHistory/TransactionsPass for the given range and parses
+  /// the result table into [Transaction]s (newest first, as returned).
+  Future<List<Transaction>> fetchTransactions(
+    String cookieHeader,
+    DateTime from,
+    DateTime to,
+  ) async {
+    final token = await _verificationToken(cookieHeader);
+
+    final res = await http.post(
+      Uri.parse("$_base/TransactionHistory/TransactionsPass"),
+      headers: {
+        "Cookie": cookieHeader,
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://secure.touchnet.net",
+        "Referer": "$_base/TransactionHistory/Transactions",
+        "User-Agent": _userAgent,
+      },
+      body: {
+        "FromDate": _fmtDate(from),
+        "ToDate": _fmtDate(to),
+        "ReturnRows": "1000",
+        "BalanceID": "",
+        "__RequestVerificationToken": token,
+      },
+    );
+
+    final rows = parse(res.body)
+        .querySelectorAll('#transaction-history-result-table tbody tr');
+
+    return rows.map((r) {
+      String cell(String title) =>
+          r.querySelector('td[data-title="$title"]')?.text.trim() ?? "";
+      return Transaction(
+        dateTime: cell("Date - Time"),
+        type: cell("Type"),
+        terminal: cell("Terminal"),
+        status: cell("Status"),
+        balance: cell("Balance"),
+        units: cell("Units"),
+        amount: cell("Amount"),
+      );
+    }).toList();
+  }
 
   Future<String> fetchBalance(String cookieHeader) async {
     try {

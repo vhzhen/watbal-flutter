@@ -5,11 +5,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 const String _dashboardUrl =
     "https://secure.touchnet.net/C22566_oneweb/Account/Dashboard";
 
+bool _isDashboard(WebUri? url) =>
+    url != null && url.toString().contains("Account/Dashboard");
+
 /// Full-height login popup.
 ///
-/// Pops with the saved cookie header string the instant a valid session is
-/// detected (no waiting for the dashboard to render), or with `null` if the
-/// user dismisses it manually.
+/// An opaque cover sits over the WebView so the authenticated Dashboard is
+/// never visible: the user only ever sees the spinner or an actual login
+/// page. The cover is lifted only when a login page is reached; it drops back
+/// down the moment we navigate back toward the Dashboard, so the popup closes
+/// straight from the spinner with no Dashboard flash.
+///
+/// Success is gated on the anti-forgery token being present in the Dashboard
+/// HTML (the same thing the scraper needs) — checking cookie presence alone is
+/// unreliable because the cookie names survive session expiry and cause a
+/// stale-session spin.
 class LoginWebView extends StatefulWidget {
   const LoginWebView({super.key});
 
@@ -19,35 +29,42 @@ class LoginWebView extends StatefulWidget {
 
 class _LoginWebViewState extends State<LoginWebView> {
   bool _handled = false;
+  bool _cover = true; // opaque overlay hiding the WebView
   double _progress = 0;
 
-  /// Only these cookies are needed downstream by the scraper. The
-  /// __RequestVerificationToken cookie has a rotating suffix, so it's matched
-  /// by prefix.
   bool _isWanted(String name) =>
       name == ".ASPXAUTH" ||
       name == "ASP.NET_OneWebLang" ||
       name == "ROUTEID" ||
       name.startsWith("__RequestVerificationToken");
 
-  Future<void> _checkSession() async {
+  Future<void> _evaluate(
+    InAppWebViewController controller,
+    WebUri? url,
+  ) async {
     if (_handled) return;
 
-    // All four cookies live on the secure.touchnet.net domain, so query that
-    // domain regardless of which page (IdP / DUO) is currently showing.
+    if (!_isDashboard(url)) {
+      // On a login / IdP / DUO page — let the user see and interact with it.
+      if (_cover && mounted) setState(() => _cover = false);
+      return;
+    }
+
+    // On the Dashboard URL: is it the real authenticated page or the login
+    // page served there? The token is only present when authenticated.
+    final html = await controller.getHtml();
+    final authed =
+        html != null && html.contains('name="__RequestVerificationToken"');
+
+    if (!authed) {
+      if (_cover && mounted) setState(() => _cover = false);
+      return;
+    }
+
     final cookies =
         await CookieManager.instance().getCookies(url: WebUri(_dashboardUrl));
-
-    bool has(String name) => cookies.any((c) => c.name == name);
-    final hasToken =
-        cookies.any((c) => c.name.startsWith("__RequestVerificationToken"));
-
-    // .ASPXAUTH is set last (on the post-DUO redirect); the others are set
-    // earlier. Require all of them before we close.
-    if (!has(".ASPXAUTH") ||
-        !has("ASP.NET_OneWebLang") ||
-        !has("ROUTEID") ||
-        !hasToken) {
+    if (!cookies.any((c) => c.name == ".ASPXAUTH")) {
+      if (_cover && mounted) setState(() => _cover = false);
       return;
     }
 
@@ -70,34 +87,56 @@ class _LoginWebViewState extends State<LoginWebView> {
           icon: const Icon(Icons.close),
           onPressed: () => Navigator.of(context).pop(null),
         ),
-        bottom: _progress < 1.0
+        bottom: (_progress < 1.0 && !_cover)
             ? PreferredSize(
                 preferredSize: const Size.fromHeight(2),
                 child: LinearProgressIndicator(value: _progress),
               )
             : null,
       ),
-      body: InAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri(_dashboardUrl)),
-        // incognito:false + clearCache:false keep WKWebView's persistent
-        // cookie store alive, so the DUO "remember this device" cookie and
-        // iOS saved-password / Face ID autofill keep working across launches.
-        initialSettings: InAppWebViewSettings(
-          clearCache: false,
-          cacheEnabled: true,
-          incognito: false,
-          isFraudulentWebsiteWarningEnabled: true,
-          transparentBackground: true,
-        ),
-        onProgressChanged: (controller, progress) {
-          setState(() => _progress = progress / 100);
-          // Fires repeatedly during the post-login redirect chain, so we can
-          // catch .ASPXAUTH before the dashboard finishes painting.
-          _checkSession();
-        },
-        onLoadStart: (controller, url) => _checkSession(),
-        onLoadStop: (controller, url) => _checkSession(),
-        onUpdateVisitedHistory: (controller, url, isReload) => _checkSession(),
+      body: Stack(
+        children: [
+          InAppWebView(
+            initialUrlRequest: URLRequest(url: WebUri(_dashboardUrl)),
+            initialSettings: InAppWebViewSettings(
+              clearCache: false,
+              cacheEnabled: true,
+              incognito: false,
+              isFraudulentWebsiteWarningEnabled: true,
+            ),
+            onProgressChanged: (controller, progress) {
+              setState(() => _progress = progress / 100);
+            },
+            onLoadStart: (controller, url) {
+              // Re-cover before the authenticated Dashboard can paint.
+              if (_isDashboard(url) && !_cover && mounted) {
+                setState(() => _cover = true);
+              }
+            },
+            onLoadStop: (controller, url) => _evaluate(controller, url),
+            onUpdateVisitedHistory: (controller, url, isReload) =>
+                _evaluate(controller, url),
+          ),
+          if (_cover)
+            Container(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              alignment: Alignment.center,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(
+                    "Checking your session…",
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
