@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' show parse;
 import 'package:home_widget/home_widget.dart';
@@ -62,7 +63,7 @@ class ScraperService {
     final rows = parse(res.body)
         .querySelectorAll('#transaction-history-result-table tbody tr');
 
-    return rows.map((r) {
+    final txns = rows.map((r) {
       String cell(String title) =>
           r.querySelector('td[data-title="$title"]')?.text.trim() ?? "";
       return Transaction(
@@ -75,6 +76,36 @@ class ScraperService {
         amount: cell("Amount"),
       );
     }).toList();
+
+    await _updateTransactionsWidget(txns);
+    return txns;
+  }
+
+  /// Pushes the newest transactions into the shared app group so the larger
+  /// iOS widget can show a recent-activity list.
+  Future<void> _updateTransactionsWidget(List<Transaction> txns) async {
+    try {
+      await HomeWidget.setAppGroupId(appGroupId);
+      final recent = txns
+          .take(8)
+          .map((t) => {
+                'label': t.label,
+                'amount': t.amount,
+                'date': t.dateTime,
+                'isDebit': t.isDebit,
+              })
+          .toList();
+      await HomeWidget.saveWidgetData<String>(
+          'transactions_json', jsonEncode(recent));
+      await HomeWidget.saveWidgetData<String>('last_updated',
+          DateTime.now().millisecondsSinceEpoch.toString());
+      await HomeWidget.updateWidget(
+        name: 'WatBalWidgetReceiver',
+        iOSName: 'WatBalWidget',
+      );
+    } catch (e) {
+      debugPrint("Widget Txn Update Error: $e");
+    }
   }
 
   Future<String> fetchBalance(String cookieHeader) async {
@@ -164,8 +195,10 @@ class ScraperService {
     try {
       await HomeWidget.setAppGroupId(appGroupId);
       await HomeWidget.saveWidgetData<String>('balance_text', balance);
+      await HomeWidget.saveWidgetData<String>('last_updated',
+          DateTime.now().millisecondsSinceEpoch.toString());
       await HomeWidget.updateWidget(
-        name: 'WatBalWidgetReceiver', 
+        name: 'WatBalWidgetReceiver',
         iOSName: 'WatBalWidget',
       );
     } catch (e) {

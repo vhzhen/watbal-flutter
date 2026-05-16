@@ -1,38 +1,40 @@
 import 'package:flutter/material.dart';
+import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String _prefsKey = 'app_theme';
+const String _appGroupId = 'group.com.vincent.watbal';
 
-enum AppThemeOption { light, dark, green, orange }
+enum AppThemeOption { light, dark, green }
 
 extension AppThemeOptionX on AppThemeOption {
   String get label => switch (this) {
         AppThemeOption.light => 'Light',
         AppThemeOption.dark => 'Dark',
-        AppThemeOption.green => 'Green',
-        AppThemeOption.orange => 'Orange',
+        AppThemeOption.green => 'Green'
       };
 
   /// Colour shown in the settings picker swatch.
   Color get swatch => switch (this) {
         AppThemeOption.light => Colors.white,
         AppThemeOption.dark => const Color(0xFF1C1C1E),
-        AppThemeOption.green => const Color(0xFF2E7D32),
-        AppThemeOption.orange => const Color(0xFFEF6C00),
+        AppThemeOption.green => const Color(0xFF2E7D32)
       };
 
   ThemeData get themeData => switch (this) {
         AppThemeOption.light => _make(Colors.blue, Brightness.light),
         AppThemeOption.dark => _make(Colors.blue, Brightness.dark),
-        AppThemeOption.green => _make(Colors.green, Brightness.light),
-        AppThemeOption.orange => _make(Colors.deepOrange, Brightness.light),
+        AppThemeOption.green => _make(Colors.green, Brightness.light)
       };
 }
 
 ThemeData _make(Color seed, Brightness brightness) {
+  // vibrant keeps the seed hue saturated; the default tonal mapping
+  // desaturates a pure orange/green into a muted grey-brown.
   final scheme = ColorScheme.fromSeed(
     seedColor: seed,
     brightness: brightness,
+    dynamicSchemeVariant: DynamicSchemeVariant.vibrant,
   );
   return ThemeData(
     useMaterial3: true,
@@ -66,6 +68,7 @@ class ThemeController extends ChangeNotifier {
       orElse: () => AppThemeOption.light,
     );
     notifyListeners();
+    _syncToWidget();
   }
 
   Future<void> set(AppThemeOption option) async {
@@ -74,6 +77,22 @@ class ThemeController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefsKey, option.name);
+    _syncToWidget();
+  }
+
+  /// Mirror the active theme into the shared app group so the iOS home-screen
+  /// widget can render with matching colours.
+  Future<void> _syncToWidget() async {
+    try {
+      await HomeWidget.setAppGroupId(_appGroupId);
+      await HomeWidget.saveWidgetData<String>('app_theme', _option.name);
+      await HomeWidget.updateWidget(
+        name: 'WatBalWidgetReceiver',
+        iOSName: 'WatBalWidget',
+      );
+    } catch (_) {
+      // Widget not available (e.g. Android dev) — non-fatal.
+    }
   }
 }
 

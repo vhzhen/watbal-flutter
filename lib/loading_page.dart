@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:watbal/login_webview.dart';
 import 'package:watbal/scraper_service.dart';
+import 'package:watbal/silent_auth.dart';
 
 /// The page shown whenever we don't have a balance to display yet:
 /// on cold start, while fetching, and whenever the session dies.
@@ -67,6 +68,21 @@ class _LoadingPageState extends State<LoadingPage> {
 
   Future<void> _promptLogin({bool expired = false}) async {
     if (!mounted) return;
+
+    // Try a fast, invisible re-auth using the persisted WebView session
+    // (DUO-remembered) before bothering the user with the login form. No
+    // WebView is shown, so there is no Dashboard flash.
+    setState(() {
+      _busy = true;
+      _status = "Signing you in…";
+    });
+    final silent = await trySilentReauth();
+    if (!mounted) return;
+    if (silent != null) {
+      _fetch(silent, fromLogin: true);
+      return;
+    }
+
     setState(() {
       _busy = false;
       _status = expired

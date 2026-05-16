@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-const String _dashboardUrl =
-    "https://secure.touchnet.net/C22566_oneweb/Account/Dashboard";
+import 'package:watbal/silent_auth.dart';
 
 bool _isDashboard(WebUri? url) =>
     url != null && url.toString().contains("Account/Dashboard");
@@ -32,12 +30,6 @@ class _LoginWebViewState extends State<LoginWebView> {
   bool _cover = true; // opaque overlay hiding the WebView
   double _progress = 0;
 
-  bool _isWanted(String name) =>
-      name == ".ASPXAUTH" ||
-      name == "ASP.NET_OneWebLang" ||
-      name == "ROUTEID" ||
-      name.startsWith("__RequestVerificationToken");
-
   Future<void> _evaluate(
     InAppWebViewController controller,
     WebUri? url,
@@ -61,18 +53,13 @@ class _LoginWebViewState extends State<LoginWebView> {
       return;
     }
 
-    final cookies =
-        await CookieManager.instance().getCookies(url: WebUri(_dashboardUrl));
-    if (!cookies.any((c) => c.name == ".ASPXAUTH")) {
+    final header = await harvestSessionHeader();
+    if (header == null) {
       if (_cover && mounted) setState(() => _cover = false);
       return;
     }
 
     _handled = true;
-    final header = cookies
-        .where((c) => _isWanted(c.name))
-        .map((c) => "${c.name}=${c.value}")
-        .join("; ");
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString("session_cookies", header);
     if (mounted) Navigator.of(context).pop(header);
@@ -97,7 +84,7 @@ class _LoginWebViewState extends State<LoginWebView> {
       body: Stack(
         children: [
           InAppWebView(
-            initialUrlRequest: URLRequest(url: WebUri(_dashboardUrl)),
+            initialUrlRequest: URLRequest(url: WebUri(kDashboardUrl)),
             initialSettings: InAppWebViewSettings(
               clearCache: false,
               cacheEnabled: true,
@@ -108,8 +95,12 @@ class _LoginWebViewState extends State<LoginWebView> {
               setState(() => _progress = progress / 100);
             },
             onLoadStart: (controller, url) {
-              // Re-cover before the authenticated Dashboard can paint.
-              if (_isDashboard(url) && !_cover && mounted) {
+              // Cover during *any* navigation. The post-DUO redirect can hop
+              // through intermediate auth URLs before reaching the Dashboard,
+              // so we must not depend on recognising the URL here — just hide
+              // everything until the page settles and _evaluate decides to
+              // reveal (login page) or pop (authenticated Dashboard).
+              if (!_cover && mounted && !_handled) {
                 setState(() => _cover = true);
               }
             },

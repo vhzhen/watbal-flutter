@@ -45,6 +45,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.5.5
   home_widget: ^0.9.1
+  # Background refresh so the widget updates without opening the app
+  workmanager: ^0.5.2
 
 dev_dependencies:
   flutter_test:

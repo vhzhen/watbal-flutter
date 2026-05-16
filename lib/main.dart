@@ -1,10 +1,34 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:workmanager/workmanager.dart';
 import 'package:watbal/app_theme.dart';
+import 'package:watbal/background_refresh.dart';
 import 'package:watbal/display_page.dart';
 import 'package:watbal/loading_page.dart';
 import 'package:watbal/transactions_page.dart';
 
-void main() => runApp(const WatBalRoot());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    await Workmanager().initialize(callbackDispatcher);
+    if (Platform.isIOS) {
+      // workmanager 0.5.2 has no periodic task on iOS — schedule a one-off
+      // BGProcessingTask; the task itself re-schedules the next one (see
+      // background_refresh.dart), giving a periodic-ish chain. iOS still
+      // decides the real timing.
+      await Workmanager().registerOneOffTask(
+        kRefreshTaskId,
+        kRefreshTaskId,
+        initialDelay: const Duration(minutes: 15),
+      );
+    }
+  } catch (e) {
+    debugPrint("Background refresh setup skipped: $e");
+  }
+
+  runApp(const WatBalRoot());
+}
 
 class WatBalRoot extends StatefulWidget {
   const WatBalRoot({super.key});
