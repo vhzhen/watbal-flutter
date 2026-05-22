@@ -5,6 +5,7 @@ import 'package:watbal/app_theme.dart';
 import 'package:watbal/background_refresh.dart';
 import 'package:watbal/display_page.dart';
 import 'package:watbal/loading_page.dart';
+import 'package:watbal/session_strategies.dart';
 import 'package:watbal/transactions_page.dart';
 
 Future<void> main() async {
@@ -20,7 +21,7 @@ Future<void> main() async {
       await Workmanager().registerOneOffTask(
         kRefreshTaskId,
         kRefreshTaskId,
-        initialDelay: const Duration(minutes: 15),
+        initialDelay: backgroundInterval(kActiveStrategy),
       );
     }
   } catch (e) {
@@ -75,8 +76,44 @@ class WatBalApp extends StatefulWidget {
   State<WatBalApp> createState() => _WatBalAppState();
 }
 
-class _WatBalAppState extends State<WatBalApp> {
+class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
   String? _balance;
+  final SessionKeeper _keeper = SessionKeeper();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Start the ticker now; it no-ops for strategies without a foreground
+    // interval. Pings need a stored cookie; the keeper handles that gracefully.
+    _keeper.start();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _keeper.stop();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _keeper.start();
+        // Fire an immediate ping so a long-idle backgrounded session gets
+        // refreshed the moment the user reopens the app.
+        _keeper.pingNow();
+        break;
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        _keeper.stop();
+        break;
+      case AppLifecycleState.inactive:
+        break;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

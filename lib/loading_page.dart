@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:watbal/login_webview.dart';
@@ -47,6 +49,13 @@ class _LoadingPageState extends State<LoadingPage> {
 
     try {
       final result = await _scraper.fetchBalance(cookies);
+      // Best-effort: kick off a transactions-widget refresh in the
+      // background so the home-screen widget shows fresh activity even if
+      // the user never swipes to the in-app transactions page. Failures
+      // here must not block the balance from showing.
+      unawaited(_scraper.refreshTransactionsWidget(cookies).catchError((e) {
+        debugPrint("Cold-start txn widget refresh failed: $e");
+      }));
       if (mounted) widget.onLoaded(result);
     } catch (e) {
       if (!mounted) return;

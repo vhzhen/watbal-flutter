@@ -17,6 +17,14 @@ class TransactionsPage extends StatefulWidget {
 class _TransactionsPageState extends State<TransactionsPage> {
   final ScraperService _scraper = ScraperService();
 
+  /// Keys for persisting the user's last-selected date range across launches.
+  /// We store the *preset* when one is active (e.g. "30", "90", "365") so a
+  /// rolling window like "30 days" stays rolling next launch; otherwise we
+  /// store an explicit start/end pair for custom ranges.
+  static const _kPresetKey = 'txn_range_preset_days';
+  static const _kStartKey = 'txn_range_start_ms';
+  static const _kEndKey = 'txn_range_end_ms';
+
   late DateTimeRange _range = DateTimeRange(
     start: DateTime.now().subtract(const Duration(days: 90)),
     end: DateTime.now(),
@@ -29,7 +37,45 @@ class _TransactionsPageState extends State<TransactionsPage> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _restoreRangeAndLoad();
+  }
+
+  /// Reads the saved preset/custom range from prefs (if any) and kicks off
+  /// the initial load. Falls back to the 90-day default if nothing's stored.
+  Future<void> _restoreRangeAndLoad() async {
+    final prefs = await SharedPreferences.getInstance();
+    final preset = prefs.getInt(_kPresetKey);
+    if (preset != null) {
+      // Recompute rolling window from "now" so "30 days" stays rolling.
+      _range = DateTimeRange(
+        start: DateTime.now().subtract(Duration(days: preset)),
+        end: DateTime.now(),
+      );
+    } else {
+      final startMs = prefs.getInt(_kStartKey);
+      final endMs = prefs.getInt(_kEndKey);
+      if (startMs != null && endMs != null) {
+        _range = DateTimeRange(
+          start: DateTime.fromMillisecondsSinceEpoch(startMs),
+          end: DateTime.fromMillisecondsSinceEpoch(endMs),
+        );
+      }
+    }
+    if (mounted) _load();
+  }
+
+  Future<void> _savePreset(int days) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kPresetKey, days);
+    await prefs.remove(_kStartKey);
+    await prefs.remove(_kEndKey);
+  }
+
+  Future<void> _saveCustom(DateTimeRange range) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kPresetKey);
+    await prefs.setInt(_kStartKey, range.start.millisecondsSinceEpoch);
+    await prefs.setInt(_kEndKey, range.end.millisecondsSinceEpoch);
   }
 
   Future<void> _load() async {
@@ -77,6 +123,7 @@ class _TransactionsPageState extends State<TransactionsPage> {
         end: DateTime.now(),
       );
     });
+    _savePreset(days);
     _load();
   }
 
@@ -89,6 +136,7 @@ class _TransactionsPageState extends State<TransactionsPage> {
     );
     if (picked != null) {
       setState(() => _range = picked);
+      await _saveCustom(picked);
       _load();
     }
   }

@@ -77,8 +77,22 @@ class ScraperService {
       );
     }).toList();
 
-    await _updateTransactionsWidget(txns);
+    // No widget update here — the widget always wants the most-recent N
+    // transactions regardless of the user's in-app date filter. Use
+    // [refreshTransactionsWidget] for widget refreshes.
     return txns;
+  }
+
+  /// Refreshes the transactions widget with the latest activity regardless of
+  /// what range the user has selected in-app. Always queries the last 5 years
+  /// so we capture the newest entries; only the top 8 are pushed to the
+  /// widget. Call this from background refresh, foreground ticker, and on
+  /// cold start.
+  Future<void> refreshTransactionsWidget(String cookieHeader) async {
+    final now = DateTime.now();
+    final from = DateTime(now.year - 5, now.month, now.day);
+    final txns = await fetchTransactions(cookieHeader, from, now);
+    await _updateTransactionsWidget(txns);
   }
 
   /// Pushes the newest transactions into the shared app group so the larger
@@ -106,6 +120,26 @@ class ScraperService {
     } catch (e) {
       debugPrint("Widget Txn Update Error: $e");
     }
+  }
+
+  /// Lightweight session ping — GETs Dashboard for a fresh token, then POSTs
+  /// KeepAlive. ~2 small requests, no parsing of balances/transactions. Use
+  /// this when you only want to extend the ASP.NET sliding-auth window
+  /// without doing the full balance scrape. Throws "Session Expired" on the
+  /// same condition as [fetchBalance].
+  Future<void> keepAlive(String cookieHeader) async {
+    final token = await _verificationToken(cookieHeader);
+    await http.post(
+      Uri.parse("$_base/Layout/KeepAlive"),
+      headers: {
+        "Cookie": cookieHeader,
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": _userAgent,
+      },
+      body: {"__RequestVerificationToken": token},
+    );
   }
 
   Future<String> fetchBalance(String cookieHeader) async {

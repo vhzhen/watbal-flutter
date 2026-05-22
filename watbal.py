@@ -92,4 +92,10 @@ def main():
         print("Auth failed.")
 
 if __name__ == "__main__":
+    size = 5
+    for i in range(1, size+1):
+        cur_string = "*" * i
+        print(cur_string)
+    import sys
+    sys.exit()
     main()
