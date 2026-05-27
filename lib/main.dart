@@ -1,15 +1,33 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:watbal/app_theme.dart';
 import 'package:watbal/background_refresh.dart';
 import 'package:watbal/display_page.dart';
 import 'package:watbal/loading_page.dart';
 import 'package:watbal/session_strategies.dart';
+import 'package:watbal/silent_auth.dart';
 import 'package:watbal/transactions_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // One-time-ish migration: re-save the session header so it lands in the
+  // shared app group as well as SharedPreferences. The native
+  // BalanceRefresher reads from the app group, so a session saved by an
+  // older build (when we only wrote to SharedPreferences) would be invisible
+  // to the background task — it would log "no cookies; skipping" and exit
+  // without ever refreshing the widget. Idempotent: safe to run every launch.
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final cookies = prefs.getString('session_cookies');
+    if (cookies != null && cookies.isNotEmpty) {
+      await saveSessionHeader(cookies);
+    }
+  } catch (e) {
+    debugPrint("Session migration skipped: $e");
+  }
 
   try {
     await Workmanager().initialize(callbackDispatcher);

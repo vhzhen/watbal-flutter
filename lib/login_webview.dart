@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:watbal/silent_auth.dart';
 
 bool _isDashboard(WebUri? url) =>
@@ -60,8 +59,7 @@ class _LoginWebViewState extends State<LoginWebView> {
     }
 
     _handled = true;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("session_cookies", header);
+    await saveSessionHeader(header);
     if (mounted) Navigator.of(context).pop(header);
   }
 

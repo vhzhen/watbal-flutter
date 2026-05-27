@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:watbal/app_theme.dart';
+import 'package:watbal/silent_auth.dart';
 
 /// Centered settings dialog (covers the middle of the screen, not a page).
 ///
@@ -27,8 +27,7 @@ class _SettingsDialog extends StatelessWidget {
   const _SettingsDialog({required this.controller, required this.onSignOut});
 
   Future<void> _signOut(BuildContext context) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('session_cookies');
+    await clearSessionHeader();
     // Clearing the WebView's cookie store is required: otherwise the
     // persisted .ASPXAUTH would let the login popup auto-close and log the
     // user straight back in.
