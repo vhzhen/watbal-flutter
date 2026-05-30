@@ -81,5 +81,20 @@
 		<string>com.vincent.watbal.refresh</string>
 		<string>com.vincent.watbal.refresh.app</string>
 	</array>
+	<!-- Long-press Quick Actions. iOS renders these above the system items
+	     (Edit Home Screen, Share App, Require Password, Remove App). The
+	     "um" action is a deliberate joke — it has no handler, so tapping it
+	     just launches the app normally. -->
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.vincent.watbal.shortcut.um</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Um...</string>
+			<key>UIApplicationShortcutItemSubtitle</key>
+			<string>You're just moving the app icon, right?</string>
+		</dict>
+	</array>
 </dict>
 </plist>
