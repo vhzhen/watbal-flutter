@@ -39,7 +39,10 @@
         android:textSize="26sp"
         android:maxLines="1" />
 
-    <View
+    <!-- RemoteViews only allows a whitelist of view classes; a bare <View> is
+         rejected ("Class not allowed to be inflated"). Use an allowed container
+         (LinearLayout) as the divider line instead. -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:layout_marginTop="8dp"
