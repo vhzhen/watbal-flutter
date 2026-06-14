@@ -74,29 +74,46 @@ Future<String?> loadSession() async {
 ///
 /// Critical subtlety: the TouchNet auth flow bounces through CAS/SSO URLs
 /// even with valid cookies, so we must NOT bail negatively just because an
-/// intermediate `onLoadStop` URL isn't the Dashboard — we'd cancel the
-/// silent path before redirects complete and force the popup to appear for
-/// what should be a no-op. Only finish positively when we see an
-/// authenticated Dashboard; otherwise fall through to the timeout.
+/// intermediate `onLoadStop` URL isn't the Dashboard — that would cancel the
+/// silent path before redirects complete and force the popup for what should
+/// be a no-op. We finish positively on an authenticated Dashboard, and bail
+/// fast only when a page renders a password field (the unambiguous "SSO is
+/// dead, the user must sign in" signal). The 12s timeout is just a backstop.
 Future<String?> trySilentReauth() async {
   final completer = Completer<String?>();
   HeadlessInAppWebView? headless;
 
-  Future<void> tryHarvest(
+  Future<void> evaluate(
     InAppWebViewController controller,
     WebUri? url,
   ) async {
     if (completer.isCompleted) return;
-    if (url == null || !url.toString().contains("Account/Dashboard")) return;
-    final html = await controller.getHtml();
-    if (html == null ||
-        !html.contains('name="__RequestVerificationToken"')) {
+
+    if (url != null && url.toString().contains("Account/Dashboard")) {
+      // Reached the Dashboard. The anti-forgery token confirms we're
+      // authenticated (vs. a login form served at the Dashboard URL).
+      final html = await controller.getHtml();
+      if (html == null ||
+          !html.contains('name="__RequestVerificationToken"')) {
+        return;
+      }
+      final header = await _harvestCookieHeader();
+      if (header == null) return;
+      await saveSession(header);
+      if (!completer.isCompleted) completer.complete(header);
       return;
     }
-    final header = await _harvestCookieHeader();
-    if (header == null) return;
-    await saveSession(header);
-    if (!completer.isCompleted) completer.complete(header);
+
+    // Settled on a non-Dashboard page. A rendered password field means the
+    // persisted SSO session is dead and the flow is stuck waiting for the
+    // user — bail immediately instead of waiting out the timeout. (The CAS
+    // /login endpoint 302-redirects a *valid* SSO session straight through
+    // without rendering a form, so this only fires when login is truly
+    // required.)
+    final html = await controller.getHtml();
+    if (html != null && html.contains('type="password"')) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
   }
 
   headless = HeadlessInAppWebView(
@@ -106,8 +123,8 @@ Future<String?> trySilentReauth() async {
       javaScriptEnabled: true,
       sharedCookiesEnabled: true,
     ),
-    onLoadStop: (c, url) => tryHarvest(c, url),
-    onUpdateVisitedHistory: (c, url, _) => tryHarvest(c, url),
+    onLoadStop: (c, url) => evaluate(c, url),
+    onUpdateVisitedHistory: (c, url, _) => evaluate(c, url),
     onReceivedError: (_, req, err) {
       if (req.isForMainFrame ?? false) {
         debugPrint("[silentReauth] main-frame error: ${err.description}");
@@ -117,22 +134,23 @@ Future<String?> trySilentReauth() async {
 
   await headless.run();
   final result = await completer.future
-      .timeout(const Duration(seconds: 18), onTimeout: () => null);
+      .timeout(const Duration(seconds: 12), onTimeout: () => null);
   await headless.dispose();
   return result;
 }
 
 // ───────────────────────────── visible login popup ─────────────────────────
 
-bool _isDashboardUrl(WebUri? url) =>
-    url != null && url.toString().contains("Account/Dashboard");
-
 /// Full-height login popup. An opaque cover sits over the WebView so the
 /// authenticated Dashboard is never briefly visible: the user sees the
-/// spinner, then the actual login page, then the popup closes. The cover is
-/// lifted only when the WebView lands on a non-Dashboard URL (a real login
-/// form). Returns the cookie header on success, or null if the user backed
-/// out.
+/// spinner, then the actual login page, then the popup closes.
+///
+/// Authentication is detected by the `.ASPXAUTH` cookie rather than the
+/// rendered Dashboard HTML. The cookie is set on the redirect *into* the
+/// Dashboard — before the page paints — so the moment it appears we keep the
+/// cover up, stop the load, and pop. The Dashboard never renders. The cover is
+/// lifted only on a page with no auth cookie (a real login / IdP / DUO form).
+/// Returns the cookie header on success, or null if the user backed out.
 class LoginWebView extends StatefulWidget {
   const LoginWebView({super.key});
 
@@ -151,31 +169,28 @@ class _LoginWebViewState extends State<LoginWebView> {
   ) async {
     if (_done) return;
 
-    if (!_isDashboardUrl(url)) {
-      // On a real login / IdP / DUO page — let the user see it.
-      if (_cover && mounted) setState(() => _cover = false);
-      return;
-    }
-
-    // Dashboard URL could be authenticated Dashboard or login-form-served-
-    // at-Dashboard-URL. The anti-forgery token is the reliable signal.
-    final html = await controller.getHtml();
-    final authed =
-        html != null && html.contains('name="__RequestVerificationToken"');
-    if (!authed) {
-      if (_cover && mounted) setState(() => _cover = false);
-      return;
-    }
-
+    // The `.ASPXAUTH` cookie is set on the redirect *into* the Dashboard, so
+    // it's available as early as onLoadStart — before the page paints.
     final header = await _harvestCookieHeader();
-    if (header == null) {
-      if (_cover && mounted) setState(() => _cover = false);
+    if (header != null) {
+      // Authenticated. Keep the cover up so the Dashboard is never visible.
+      if (!_cover && mounted) setState(() => _cover = true);
+
+      // Finalize only once the full session is present (`.ASPXAUTH` plus the
+      // 3 other wanted cookies). On the rare early event where only the auth
+      // cookie exists, stay covered and wait for the next event.
+      if (header.split("; ").length >= 4) {
+        _done = true;
+        await controller.stopLoading();
+        await saveSession(header);
+        if (mounted) Navigator.of(context).pop(header);
+      }
       return;
     }
 
-    _done = true;
-    await saveSession(header);
-    if (mounted) Navigator.of(context).pop(header);
+    // No auth cookie → a real login / IdP / DUO page (or the login form served
+    // at the Dashboard URL). Reveal it so the user can sign in.
+    if (_cover && mounted) setState(() => _cover = false);
   }
 
   @override

@@ -21,20 +21,29 @@ Future<void> main() async {
   final cookies = await loadSession();
   if (cookies != null && cookies.isNotEmpty) await saveSession(cookies);
 
-  // Backup background refresh — workmanager schedules a BGProcessingTask on
-  // iOS. The native BGAppRefreshTask in Swift is the primary path; this is a
-  // belt-and-suspenders fallback. iOS decides when either actually fires.
-  if (Platform.isIOS) {
-    try {
-      await Workmanager().initialize(_workmanagerCallback);
+  // Background refresh so the home-screen widget updates without opening the
+  // app. iOS: a one-off BGProcessingTask that re-queues itself (the native
+  // BGAppRefreshTask in Swift is the primary path; this is a fallback). Android:
+  // a periodic WorkManager task (15-min floor; we ask for 30 to match iOS).
+  try {
+    await Workmanager().initialize(_workmanagerCallback);
+    if (Platform.isIOS) {
       await Workmanager().registerOneOffTask(
         _refreshTaskId,
         _refreshTaskId,
         initialDelay: const Duration(minutes: 30),
       );
-    } catch (e) {
-      debugPrint("Background refresh setup skipped: $e");
+    } else if (Platform.isAndroid) {
+      await Workmanager().registerPeriodicTask(
+        _refreshTaskId,
+        _refreshTaskId,
+        frequency: const Duration(minutes: 30),
+        constraints: Constraints(networkType: NetworkType.connected),
+        existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+      );
     }
+  } catch (e) {
+    debugPrint("Background refresh setup skipped: $e");
   }
 
   runApp(const WatBalApp());
@@ -240,13 +249,17 @@ const String _refreshTaskId = 'com.vincent.watbal.refresh';
 void _workmanagerCallback() {
   Workmanager().executeTask((task, _) async {
     WidgetsFlutterBinding.ensureInitialized();
-    try {
-      await Workmanager().registerOneOffTask(
-        _refreshTaskId,
-        _refreshTaskId,
-        initialDelay: const Duration(minutes: 30),
-      );
-    } catch (_) {}
+    // iOS one-off tasks don't repeat, so re-queue the next run here. Android's
+    // periodic task repeats on its own — re-registering would disturb it.
+    if (Platform.isIOS) {
+      try {
+        await Workmanager().registerOneOffTask(
+          _refreshTaskId,
+          _refreshTaskId,
+          initialDelay: const Duration(minutes: 30),
+        );
+      } catch (_) {}
+    }
 
     try {
       final cookies = await loadSession();

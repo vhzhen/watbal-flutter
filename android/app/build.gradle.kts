@@ -39,6 +39,18 @@ android {
     }
 }
 
+// home_widget 0.9.x pulls androidx.glance:glance-appwidget:1.3.0-alpha01, an
+// alpha that demands compileSdk 37 + AGP 9.1.0. The Android widget isn't built
+// for this project yet (iOS-only), so pin Glance to the stable 1.1.1, which
+// builds fine against the current compileSdk/AGP. Remove this once the project
+// formally adopts AGP 9 for Android.
+configurations.all {
+    resolutionStrategy {
+        force("androidx.glance:glance:1.1.1")
+        force("androidx.glance:glance-appwidget:1.1.1")
+    }
+}
+
 flutter {
     source = "../.."
 }

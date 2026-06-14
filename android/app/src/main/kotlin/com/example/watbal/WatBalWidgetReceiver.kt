@@ -1,0 +1,115 @@
+package com.example.watbal
+
+import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.graphics.Color
+import android.net.Uri
+import android.os.Build
+import android.widget.RemoteViews
+import es.antonborri.home_widget.HomeWidgetProvider
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+
+/// Android home-screen widget, mirroring the iOS `WatBalWidget`. Reads the same
+/// keys the Flutter side writes through `home_widget` (`balance_text`,
+/// `app_theme`, `transactions_json`, `last_updated`) and renders the balance
+/// plus a scrollable list of recent transactions. The class name must stay
+/// `WatBalWidgetReceiver` — the Dart `updateWidget(name: ...)` call resolves it
+/// as `<applicationId>.WatBalWidgetReceiver`.
+class WatBalWidgetReceiver : HomeWidgetProvider() {
+
+    override fun onUpdate(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetIds: IntArray,
+        widgetData: SharedPreferences,
+    ) {
+        val theme = WidgetTheme.named(widgetData.getString("app_theme", "light"))
+        val balance = widgetData.getString("balance_text", "\$--.--") ?: "\$--.--"
+        val updated = formatUpdated(widgetData.getString("last_updated", null))
+
+        for (id in appWidgetIds) {
+            val views = RemoteViews(context.packageName, R.layout.watbal_widget)
+
+            views.setInt(R.id.widget_root, "setBackgroundResource", theme.backgroundRes)
+            views.setTextColor(R.id.widget_title, theme.secondary)
+            views.setTextViewText(R.id.widget_updated, updated)
+            views.setTextColor(R.id.widget_updated, theme.secondary)
+            views.setTextViewText(R.id.widget_balance, balance)
+            views.setTextColor(R.id.widget_balance, theme.primary)
+            views.setTextColor(R.id.widget_empty, theme.secondary)
+
+            // Scrollable transactions list, fed by TransactionsWidgetService. A
+            // per-widget unique Uri forces the adapter to rebuild on each update.
+            val serviceIntent = Intent(context, TransactionsWidgetService::class.java).apply {
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
+            }
+            views.setRemoteAdapter(R.id.widget_list, serviceIntent)
+            views.setEmptyView(R.id.widget_list, R.id.widget_empty)
+
+            // Tapping anywhere opens the app.
+            val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            if (launch != null) {
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+                views.setOnClickPendingIntent(
+                    R.id.widget_root,
+                    PendingIntent.getActivity(context, 0, launch, flags),
+                )
+            }
+
+            appWidgetManager.updateAppWidget(id, views)
+            appWidgetManager.notifyAppWidgetViewDataChanged(id, R.id.widget_list)
+        }
+    }
+
+    /// "Updated 3:45 PM" today, "Updated Jun 14" otherwise — matches iOS.
+    private fun formatUpdated(raw: String?): String {
+        val ms = raw?.toDoubleOrNull() ?: return ""
+        val date = Date(ms.toLong())
+        val now = Calendar.getInstance()
+        val then = Calendar.getInstance().apply { time = date }
+        val sameDay = now.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
+            now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
+        val fmt = SimpleDateFormat(if (sameDay) "h:mm a" else "MMM d", Locale.getDefault())
+        return "Updated ${fmt.format(date)}"
+    }
+}
+
+/// Theme palette mirroring iOS `WidgetTheme`. Background is a rounded drawable
+/// (one per theme) so corners survive; text colors are applied programmatically.
+data class WidgetTheme(
+    val backgroundRes: Int,
+    val primary: Int,
+    val text: Int,
+    val secondary: Int,
+) {
+    companion object {
+        fun named(name: String?): WidgetTheme = when (name) {
+            "dark" -> WidgetTheme(
+                R.drawable.watbal_widget_bg_dark,
+                Color.parseColor("#6699FF"),
+                Color.WHITE,
+                Color.parseColor("#99FFFFFF"),
+            )
+            "green" -> WidgetTheme(
+                R.drawable.watbal_widget_bg_green,
+                Color.parseColor("#2E7D32"),
+                Color.parseColor("#1A2E1A"),
+                Color.parseColor("#4D664D"),
+            )
+            else -> WidgetTheme(
+                R.drawable.watbal_widget_bg_light,
+                Color.parseColor("#007AFF"),
+                Color.BLACK,
+                Color.parseColor("#8E8E93"),
+            )
+        }
+    }
+}
