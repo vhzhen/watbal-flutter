@@ -1,19 +1,20 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:watbal/login_webview.dart';
-import 'package:watbal/scraper_service.dart';
-import 'package:watbal/silent_auth.dart';
 
-/// The page shown whenever we don't have a balance to display yet:
-/// on cold start, while fetching, and whenever the session dies.
+import 'package:watbal/auth.dart';
+import 'package:watbal/scraper.dart';
+
+/// Cold-start / session-lost page. The order of fallbacks is the entire UX
+/// story:
 ///
-/// It auto-attempts a fetch and auto-presents the login popup when the
-/// session is missing or expired. Calls [onLoaded] once a balance is in hand.
+/// 1. **Stored cookies + working scrape** — instant, no UI flash.
+/// 2. **Stored cookies that 401'd** — try a silent re-auth using the
+///    WebView's persisted DUO-remembered cookies. Headless, no UI.
+/// 3. **Silent re-auth failed** — only now show the actual login popup.
+///
+/// The whole point is that steps 2-most-of-the-time means the user almost
+/// never sees a "please sign in" dialog after their first real login.
 class LoadingPage extends StatefulWidget {
   final void Function(String balance) onLoaded;
-
   const LoadingPage({super.key, required this.onLoaded});
 
   @override
@@ -21,7 +22,6 @@ class LoadingPage extends StatefulWidget {
 }
 
 class _LoadingPageState extends State<LoadingPage> {
-  final ScraperService _scraper = ScraperService();
   String _status = "Checking your session…";
   bool _busy = true;
 
@@ -32,66 +32,53 @@ class _LoadingPageState extends State<LoadingPage> {
   }
 
   Future<void> _start() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString("session_cookies");
+    final saved = await loadSession();
     if (saved != null) {
-      _fetch(saved);
+      _tryFetch(saved);
     } else {
-      _promptLogin();
+      _trySilentThenPrompt();
     }
   }
 
-  Future<void> _fetch(String cookies, {bool fromLogin = false}) async {
+  Future<void> _tryFetch(String cookies, {bool fromLogin = false}) async {
     setState(() {
       _busy = true;
       _status = "Fetching your balance…";
     });
-
     try {
-      final result = await _scraper.fetchBalance(cookies);
-      // Best-effort: kick off a transactions-widget refresh in the
-      // background so the home-screen widget shows fresh activity even if
-      // the user never swipes to the in-app transactions page. Failures
-      // here must not block the balance from showing.
-      unawaited(_scraper.refreshTransactionsWidget(cookies).catchError((e) {
-        debugPrint("Cold-start txn widget refresh failed: $e");
-      }));
-      if (mounted) widget.onLoaded(result);
-    } catch (e) {
+      final balance = await Scraper().fetchBalance(cookies);
+      if (mounted) widget.onLoaded(balance);
+    } catch (_) {
       if (!mounted) return;
       if (fromLogin) {
-        // Hard stop: the user just completed a real login but the scrape
-        // still failed. Re-opening the popup here would spin, so surface
-        // the problem and let the user retry by hand instead.
+        // The user just completed a real login but the scrape still failed.
+        // Reopening the popup would spin — surface the problem instead.
         setState(() {
           _busy = false;
           _status =
               "Signed in, but couldn't load your balance. Tap to try again.";
         });
       } else {
-        // Stale saved session — send the user through login once.
-        _promptLogin(expired: true);
+        _trySilentThenPrompt(expired: true);
       }
     }
   }
 
-  Future<void> _promptLogin({bool expired = false}) async {
+  Future<void> _trySilentThenPrompt({bool expired = false}) async {
     if (!mounted) return;
-
-    // Try a fast, invisible re-auth using the persisted WebView session
-    // (DUO-remembered) before bothering the user with the login form. No
-    // WebView is shown, so there is no Dashboard flash.
     setState(() {
       _busy = true;
       _status = "Signing you in…";
     });
+
     final silent = await trySilentReauth();
     if (!mounted) return;
     if (silent != null) {
-      _fetch(silent, fromLogin: true);
+      _tryFetch(silent, fromLogin: true);
       return;
     }
 
+    // Silent path is dead — show the actual login form.
     setState(() {
       _busy = false;
       _status = expired
@@ -114,10 +101,10 @@ class _LoadingPageState extends State<LoadingPage> {
       ),
     );
 
+    if (!mounted) return;
     if (header != null) {
-      _fetch(header, fromLogin: true);
-    } else if (mounted) {
-      // User backed out of the popup — let them retry manually.
+      _tryFetch(header, fromLogin: true);
+    } else {
       setState(() {
         _busy = false;
         _status = "Sign-in needed to load your balance.";
@@ -130,7 +117,8 @@ class _LoadingPageState extends State<LoadingPage> {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text("WatBal", style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text("WatBal",
+            style: TextStyle(fontWeight: FontWeight.bold)),
       ),
       body: Center(
         child: Column(
@@ -148,13 +136,15 @@ class _LoadingPageState extends State<LoadingPage> {
                 _status,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    color: scheme.onSurfaceVariant, fontSize: 16),
+                  color: scheme.onSurfaceVariant,
+                  fontSize: 16,
+                ),
               ),
             ),
             if (!_busy) ...[
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: () => _promptLogin(),
+                onPressed: _trySilentThenPrompt,
                 child: const Text("Sign in"),
               ),
             ],

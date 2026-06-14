@@ -1,225 +1,264 @@
+import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
-import 'package:watbal/app_theme.dart';
-import 'package:watbal/background_refresh.dart';
-import 'package:watbal/display_page.dart';
+
+import 'package:watbal/auth.dart';
+import 'package:watbal/home_page.dart';
 import 'package:watbal/loading_page.dart';
-import 'package:watbal/session_strategies.dart';
-import 'package:watbal/silent_auth.dart';
-import 'package:watbal/transactions_page.dart';
+import 'package:watbal/scraper.dart';
+
+// ─────────────────────────────── entry point ───────────────────────────────
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // One-time-ish migration: re-save the session header so it lands in the
-  // shared app group as well as SharedPreferences. The native
-  // BalanceRefresher reads from the app group, so a session saved by an
-  // older build (when we only wrote to SharedPreferences) would be invisible
-  // to the background task — it would log "no cookies; skipping" and exit
-  // without ever refreshing the widget. Idempotent: safe to run every launch.
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final cookies = prefs.getString('session_cookies');
-    if (cookies != null && cookies.isNotEmpty) {
-      await saveSessionHeader(cookies);
-    }
-  } catch (e) {
-    debugPrint("Session migration skipped: $e");
-  }
+  // Migrate any session saved by an older build into the iOS shared app group
+  // so the native widget-refresh task can read it. Idempotent.
+  final cookies = await loadSession();
+  if (cookies != null && cookies.isNotEmpty) await saveSession(cookies);
 
-  try {
-    await Workmanager().initialize(callbackDispatcher);
-    if (Platform.isIOS) {
-      // workmanager 0.5.2 has no periodic task on iOS — schedule a one-off
-      // BGProcessingTask; the task itself re-schedules the next one (see
-      // background_refresh.dart), giving a periodic-ish chain. iOS still
-      // decides the real timing.
+  // Backup background refresh — workmanager schedules a BGProcessingTask on
+  // iOS. The native BGAppRefreshTask in Swift is the primary path; this is a
+  // belt-and-suspenders fallback. iOS decides when either actually fires.
+  if (Platform.isIOS) {
+    try {
+      await Workmanager().initialize(_workmanagerCallback);
       await Workmanager().registerOneOffTask(
-        kRefreshTaskId,
-        kRefreshTaskId,
-        initialDelay: backgroundInterval(kActiveStrategy),
+        _refreshTaskId,
+        _refreshTaskId,
+        initialDelay: const Duration(minutes: 30),
       );
+    } catch (e) {
+      debugPrint("Background refresh setup skipped: $e");
     }
-  } catch (e) {
-    debugPrint("Background refresh setup skipped: $e");
   }
 
-  runApp(const WatBalRoot());
+  runApp(const WatBalApp());
 }
 
-class WatBalRoot extends StatefulWidget {
-  const WatBalRoot({super.key});
+// ─────────────────────────── theme persistence ─────────────────────────────
 
-  @override
-  State<WatBalRoot> createState() => _WatBalRootState();
+enum AppTheme { light, dark, green }
+
+extension AppThemeX on AppTheme {
+  String get label => switch (this) {
+        AppTheme.light => 'Light',
+        AppTheme.dark => 'Dark',
+        AppTheme.green => 'Green',
+      };
+
+  Color get swatch => switch (this) {
+        AppTheme.light => Colors.white,
+        AppTheme.dark => const Color(0xFF1C1C1E),
+        AppTheme.green => const Color(0xFF2E7D32),
+      };
+
+  ThemeData get themeData => switch (this) {
+        AppTheme.light => _build(Colors.blue, Brightness.light),
+        AppTheme.dark => _build(Colors.blue, Brightness.dark),
+        AppTheme.green => _build(Colors.green, Brightness.light),
+      };
 }
 
-class _WatBalRootState extends State<WatBalRoot> {
-  final ThemeController _theme = ThemeController();
+ThemeData _build(Color seed, Brightness brightness) {
+  // Vibrant variant keeps the seed hue saturated. The default tonal mapping
+  // desaturates a pure green into a muted grey-brown.
+  final scheme = ColorScheme.fromSeed(
+    seedColor: seed,
+    brightness: brightness,
+    dynamicSchemeVariant: DynamicSchemeVariant.vibrant,
+  );
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: scheme.surface,
+    appBarTheme: AppBarTheme(
+      backgroundColor: scheme.surface,
+      foregroundColor: scheme.onSurface,
+      elevation: 0,
+      centerTitle: true,
+    ),
+  );
+}
 
-  @override
-  void initState() {
-    super.initState();
-    _theme.load();
-  }
+/// A tiny ChangeNotifier so the picker rebuilds when the user taps a swatch
+/// and the active theme persists across launches.
+class ThemeController extends ChangeNotifier {
+  static const _key = 'app_theme';
+  AppTheme _theme = AppTheme.light;
+  AppTheme get theme => _theme;
 
-  @override
-  void dispose() {
-    _theme.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ThemeScope(
-      controller: _theme,
-      child: ListenableBuilder(
-        listenable: _theme,
-        builder: (context, _) => MaterialApp(
-          debugShowCheckedModeBanner: false,
-          theme: _theme.option.themeData,
-          home: const WatBalApp(),
-        ),
-      ),
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final name = prefs.getString(_key);
+    _theme = AppTheme.values.firstWhere(
+      (t) => t.name == name,
+      orElse: () => AppTheme.light,
     );
+    notifyListeners();
+    _syncWidget();
+  }
+
+  Future<void> set(AppTheme theme) async {
+    if (theme == _theme) return;
+    _theme = theme;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, theme.name);
+    _syncWidget();
+  }
+
+  Future<void> _syncWidget() async {
+    try {
+      await HomeWidget.setAppGroupId('group.com.vincent.watbal');
+      await HomeWidget.saveWidgetData<String>('app_theme', _theme.name);
+      await HomeWidget.updateWidget(
+        name: 'WatBalWidgetReceiver',
+        iOSName: 'WatBalWidget',
+      );
+    } catch (_) {}
   }
 }
+
+// ─────────────────────────────── app root ──────────────────────────────────
 
 class WatBalApp extends StatefulWidget {
   const WatBalApp({super.key});
-
   @override
   State<WatBalApp> createState() => _WatBalAppState();
 }
 
 class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
+  final ThemeController _theme = ThemeController();
+  Timer? _keepAlive;
   String? _balance;
-  final SessionKeeper _keeper = SessionKeeper();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Start the ticker now; it no-ops for strategies without a foreground
-    // interval. Pings need a stored cookie; the keeper handles that gracefully.
-    _keeper.start();
+    _theme.load();
+    _startKeepAlive();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _keeper.stop();
+    _keepAlive?.cancel();
+    _theme.dispose();
     super.dispose();
+  }
+
+  /// Foreground ticker: while the app is open, hit KeepAlive every 3 min to
+  /// keep the ASP.NET sliding session warm. Stopped when the app backgrounds
+  /// (the Flutter timer can't run there anyway — the iOS BGAppRefreshTask
+  /// takes over).
+  void _startKeepAlive() {
+    _keepAlive?.cancel();
+    _keepAlive = Timer.periodic(const Duration(minutes: 3), (_) async {
+      try {
+        final cookies = await loadSession();
+        if (cookies == null) return;
+        await Scraper().keepAlive(cookies);
+      } catch (e) {
+        debugPrint("[keepAlive] $e");
+      }
+    });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.resumed:
-        _keeper.start();
-        // Fire an immediate ping so a long-idle backgrounded session gets
-        // refreshed the moment the user reopens the app.
-        _keeper.pingNow();
+        _startKeepAlive();
+        // On resume, immediately push fresh balance + transactions to the
+        // widget so re-opening the app always freshens the home screen.
+        _refreshOnResume();
         break;
       case AppLifecycleState.paused:
-      case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
-        _keeper.stop();
+      case AppLifecycleState.detached:
+        _keepAlive?.cancel();
         break;
       case AppLifecycleState.inactive:
         break;
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_balance == null) {
-      return LoadingPage(
-        onLoaded: (balance) => setState(() => _balance = balance),
-      );
+  Future<void> _refreshOnResume() async {
+    try {
+      final cookies = await loadSession();
+      if (cookies == null) return;
+      final scraper = Scraper();
+      await scraper.fetchBalance(cookies);
+      // Best-effort — transactions failure shouldn't poison the balance push.
+      try {
+        await scraper.refreshTransactionsWidget(cookies);
+      } catch (e) {
+        debugPrint("[onResume txns] $e");
+      }
+    } catch (e) {
+      debugPrint("[onResume] $e");
     }
-    return HomePager(
-      balance: _balance!,
-      onSessionLost: () => setState(() => _balance = null),
-    );
-  }
-}
-
-/// Two swipeable pages: the balance (page 0, where the user starts) and the
-/// transaction history (page 1, revealed by swiping left).
-class HomePager extends StatefulWidget {
-  final String balance;
-  final VoidCallback onSessionLost;
-
-  const HomePager({
-    super.key,
-    required this.balance,
-    required this.onSessionLost,
-  });
-
-  @override
-  State<HomePager> createState() => _HomePagerState();
-}
-
-class _HomePagerState extends State<HomePager> {
-  final PageController _controller = PageController();
-  int _page = 0;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
-      body: Stack(
-        children: [
-          PageView(
-            controller: _controller,
-            onPageChanged: (i) => setState(() => _page = i),
-            children: [
-              DisplayPage(
-                balance: widget.balance,
-                onSessionLost: widget.onSessionLost,
+    return ListenableBuilder(
+      listenable: _theme,
+      builder: (context, _) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: _theme.theme.themeData,
+        home: _balance == null
+            ? LoadingPage(
+                onLoaded: (b) => setState(() => _balance = b),
+              )
+            : HomePage(
+                balance: _balance!,
+                theme: _theme,
+                onBalanceChanged: (b) => setState(() => _balance = b),
+                onSignedOut: () => setState(() => _balance = null),
               ),
-              TransactionsPage(onSessionLost: widget.onSessionLost),
-            ],
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(2, (i) {
-                    final active = i == _page;
-                    return AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      margin: const EdgeInsets.symmetric(horizontal: 4),
-                      width: active ? 20 : 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: active
-                            ? scheme.primary
-                            : scheme.onSurface.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    );
-                  }),
-                ),
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }
+}
+
+// ───────────────────────── workmanager background ──────────────────────────
+
+const String _refreshTaskId = 'com.vincent.watbal.refresh';
+
+/// Background isolate entry point. Re-queues itself, then does a best-effort
+/// balance + transactions refresh. If the session has expired (no token in
+/// the Dashboard response) we just exit quietly — there's no UI here to
+/// trigger re-auth, and the app will silently re-auth on next foreground.
+@pragma('vm:entry-point')
+void _workmanagerCallback() {
+  Workmanager().executeTask((task, _) async {
+    WidgetsFlutterBinding.ensureInitialized();
+    try {
+      await Workmanager().registerOneOffTask(
+        _refreshTaskId,
+        _refreshTaskId,
+        initialDelay: const Duration(minutes: 30),
+      );
+    } catch (_) {}
+
+    try {
+      final cookies = await loadSession();
+      if (cookies == null) return true;
+      final scraper = Scraper();
+      await scraper.fetchBalance(cookies);
+      try {
+        await scraper.refreshTransactionsWidget(cookies);
+      } catch (_) {}
+    } catch (_) {
+      // Session expired / network — fine, app will fix it on next open.
+    }
+    return true;
+  });
 }
