@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:watbal/auth.dart';
+import 'package:watbal/log_viewer_page.dart';
 import 'package:watbal/main.dart';
 import 'package:watbal/scraper.dart';
 
@@ -383,6 +384,23 @@ class _SettingsDialog extends StatelessWidget {
             const SizedBox(height: 24),
             const Divider(height: 1),
             const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const LogViewerPage()),
+                  );
+                },
+                icon: const Icon(Icons.description_outlined),
+                label: const Text("View logs"),
+                style: TextButton.styleFrom(
+                  foregroundColor: scheme.onSurfaceVariant,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
             SizedBox(
               width: double.infinity,
               child: TextButton.icon(

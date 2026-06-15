@@ -47,3 +47,8 @@ app.*.map.json
 
 # test files
 *test.py
+
+# Debug log dumps pulled off a device/emulator (e.g.
+# `adb exec-out run-as com.example.watbal cat files/watbal_debug.log > logs/x.log`).
+# The on-device file is watbal_debug.log; *.log above already covers it.
+/logs/

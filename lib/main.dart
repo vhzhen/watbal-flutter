@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
 import 'package:watbal/auth.dart';
+import 'package:watbal/debug_log.dart';
 import 'package:watbal/home_page.dart';
 import 'package:watbal/loading_page.dart';
 import 'package:watbal/scraper.dart';
@@ -150,6 +151,7 @@ class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
   final ThemeController _theme = ThemeController();
   Timer? _keepAlive;
   String? _balance;
+  DateTime? _lastResumeRefresh;
 
   @override
   void initState() {
@@ -197,6 +199,10 @@ class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
         _keepAlive?.cancel();
+        // App is closing/backgrounding: stamp the widget with "now" via a
+        // single, isolated reload so the home-screen "Updated …" reflects this
+        // visit. Fire-and-forget — the data shown was already fetched on resume.
+        Scraper().touchWidget();
         break;
       case AppLifecycleState.inactive:
         break;
@@ -204,19 +210,37 @@ class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
   }
 
   Future<void> _refreshOnResume() async {
+    // The OS can deliver several `resumed` events in quick succession; without
+    // this guard each one kicks off a full balance+transactions fetch, and the
+    // resulting burst of widget broadcasts is exactly what Android coalesces
+    // into a frozen display. Throttle to one refresh per 10s.
+    final now = DateTime.now();
+    if (_lastResumeRefresh != null &&
+        now.difference(_lastResumeRefresh!) < const Duration(seconds: 10)) {
+      return;
+    }
+    _lastResumeRefresh = now;
+
+    await DebugLog.log("resume: refreshing widget");
     try {
       final cookies = await loadSession();
-      if (cookies == null) return;
+      if (cookies == null) {
+        await DebugLog.log("resume: no session; skipping");
+        return;
+      }
       final scraper = Scraper();
-      await scraper.fetchBalance(cookies);
+      final balance = await scraper.fetchBalance(cookies);
+      await DebugLog.log("resume: balance = $balance");
       // Best-effort — transactions failure shouldn't poison the balance push.
       try {
         await scraper.refreshTransactionsWidget(cookies);
       } catch (e) {
         debugPrint("[onResume txns] $e");
+        await DebugLog.log("resume: transactions failed: $e");
       }
     } catch (e) {
       debugPrint("[onResume] $e");
+      await DebugLog.log("resume: failed: $e");
     }
   }
 
@@ -266,16 +290,46 @@ void _workmanagerCallback() {
       } catch (_) {}
     }
 
+    await DebugLog.log("bg: workmanager task fired ($task)");
     try {
-      final cookies = await loadSession();
-      if (cookies == null) return true;
+      var cookies = await loadSession();
+      if (cookies == null) {
+        await DebugLog.log("bg: no session; skipping");
+        return true;
+      }
       final scraper = Scraper();
-      await scraper.fetchBalance(cookies);
+
+      try {
+        final balance = await scraper.fetchBalance(cookies);
+        await DebugLog.log("bg: balance = $balance");
+      } catch (e) {
+        // Only "Session Expired" is recoverable in the background: the saved
+        // TouchNet cookie is dead, but the SSO / DUO "remember this device"
+        // session still lives in the WebView's cookie jar. Replay it headlessly
+        // — no password, no app open — so the widget self-heals on its own.
+        // Any other error (network, etc.) we let fall through to the outer log.
+        if (!e.toString().contains("Expired")) rethrow;
+        await DebugLog.log("bg: session expired; trying silent re-auth");
+        final fresh = await trySilentReauth();
+        if (fresh == null) {
+          // SSO is genuinely dead — a real sign-in is required, which only the
+          // foreground app can do. Leave the widget on its last value.
+          await DebugLog.log("bg: silent re-auth failed; needs real sign-in");
+          return true;
+        }
+        cookies = fresh;
+        final balance = await scraper.fetchBalance(cookies);
+        await DebugLog.log("bg: re-auth ok; balance = $balance");
+      }
+
       try {
         await scraper.refreshTransactionsWidget(cookies);
-      } catch (_) {}
-    } catch (_) {
-      // Session expired / network — fine, app will fix it on next open.
+        await DebugLog.log("bg: transactions refreshed");
+      } catch (e) {
+        await DebugLog.log("bg: transactions failed: $e");
+      }
+    } catch (e) {
+      await DebugLog.log("bg: refresh failed: $e");
     }
     return true;
   });

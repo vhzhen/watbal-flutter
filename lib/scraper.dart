@@ -5,6 +5,8 @@ import 'package:home_widget/home_widget.dart';
 import 'package:html/parser.dart' show parse;
 import 'package:http/http.dart' as http;
 
+import 'package:watbal/debug_log.dart';
+
 /// One row from the TouchNet transaction-history table.
 class Transaction {
   final String dateTime;
@@ -170,6 +172,28 @@ class Scraper {
     await _pushToWidget('transactions_json', jsonEncode(recent));
   }
 
+  /// Bumps only the widget's "last updated" timestamp and reloads it — no
+  /// network. Used when the app closes so the home-screen time reflects the
+  /// user's last visit. A single, isolated broadcast (not part of a refresh
+  /// burst) is far more likely to actually re-render than one buried in a
+  /// rapid-fire sequence, which Android coalesces.
+  Future<void> touchWidget() async {
+    try {
+      await HomeWidget.setAppGroupId(_appGroupId);
+      await HomeWidget.saveWidgetData<String>(
+        'last_updated',
+        DateTime.now().millisecondsSinceEpoch.toString(),
+      );
+      await HomeWidget.updateWidget(
+        name: 'WatBalWidgetReceiver',
+        iOSName: 'WatBalWidget',
+      );
+      await DebugLog.log("widget: touched last_updated + reload");
+    } catch (e) {
+      await DebugLog.log("widget: touch failed: $e");
+    }
+  }
+
   // ───────────────────────────── helpers ──────────────────────────────
 
   Map<String, String> _ajaxHeaders(String cookies) => {
@@ -210,8 +234,12 @@ class Scraper {
         name: 'WatBalWidgetReceiver',
         iOSName: 'WatBalWidget',
       );
+      await DebugLog.log(
+        "widget: pushed $key=${value.length > 40 ? '${value.length} chars' : value} + reload",
+      );
     } catch (e) {
       debugPrint("Widget update skipped: $e");
+      await DebugLog.log("widget: push failed for $key: $e");
     }
   }
 }

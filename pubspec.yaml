@@ -47,6 +47,9 @@ dependencies:
   home_widget: ^0.9.1
   # Background refresh so the widget updates without opening the app
   workmanager: ^0.9.0+3
+  # Writes the debug-log file the in-app Log viewer reads (works from the
+  # background isolate too)
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:

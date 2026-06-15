@@ -8,6 +8,7 @@ import android.content.SharedPreferences
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import android.widget.RemoteViews
 import es.antonborri.home_widget.HomeWidgetProvider
 import java.text.SimpleDateFormat
@@ -32,6 +33,14 @@ class WatBalWidgetReceiver : HomeWidgetProvider() {
         val theme = WidgetTheme.named(widgetData.getString("app_theme", "light"))
         val balance = widgetData.getString("balance_text", "\$--.--") ?: "\$--.--"
         val updated = formatUpdated(widgetData.getString("last_updated", null))
+
+        // Tag: WatBalWidget — `adb logcat -s WatBalWidget` shows each render so
+        // you can confirm the broadcast actually re-ran onUpdate and what time
+        // it painted.
+        Log.d(
+            "WatBalWidget",
+            "onUpdate ids=${appWidgetIds.toList()} balance=$balance \"$updated\"",
+        )
 
         for (id in appWidgetIds) {
             val views = RemoteViews(context.packageName, R.layout.watbal_widget)
