@@ -111,10 +111,24 @@ enum BalanceRefresher {
                     let nowMs = Int(Date().timeIntervalSince1970 * 1000)
                     prefs?.set("\(nowMs)", forKey: "last_updated")
 
-                    DispatchQueue.main.async {
-                        WidgetCenter.shared.reloadAllTimelines()
-                        NSLog("[BalanceRefresher] OK: \(amount)")
-                        completion(true)
+                    // Best-effort transactions refresh so the widget's list
+                    // doesn't go stale between app opens. A failure here must not
+                    // sink the balance push, so we always reload + report success
+                    // once the balance is written, regardless of this outcome.
+                    fetchTransactionsHtml(cookies: cookies, token: token) { txnHtml in
+                        if let txnHtml = txnHtml {
+                            let txns = parseTransactions(html: txnHtml)
+                            if let data = try? JSONSerialization.data(
+                                withJSONObject: txns
+                            ), let json = String(data: data, encoding: .utf8) {
+                                prefs?.set(json, forKey: "transactions_json")
+                            }
+                        }
+                        DispatchQueue.main.async {
+                            WidgetCenter.shared.reloadAllTimelines()
+                            NSLog("[BalanceRefresher] OK: \(amount)")
+                            completion(true)
+                        }
                     }
                 }
             }
@@ -194,6 +208,56 @@ enum BalanceRefresher {
         }.resume()
     }
 
+    /// POSTs the transaction-history query — mirrors the Dart
+    /// `Scraper.fetchTransactions`: a 5-year window capped at 1000 rows, the
+    /// newest of which the widget shows.
+    private static func fetchTransactionsHtml(
+        cookies: String, token: String,
+        completion: @escaping (String?) -> Void
+    ) {
+        let url = URL(string: "\(baseUrl)/TransactionHistory/TransactionsPass")!
+        var req = standardRequest(url, cookies: cookies, method: "POST")
+        req.setValue(
+            "application/x-www-form-urlencoded; charset=UTF-8",
+            forHTTPHeaderField: "Content-Type"
+        )
+        req.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        req.setValue(
+            "https://secure.touchnet.net", forHTTPHeaderField: "Origin"
+        )
+        req.setValue(
+            "\(baseUrl)/TransactionHistory/Transactions",
+            forHTTPHeaderField: "Referer"
+        )
+
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "MM/dd/yyyy"
+        let now = Date()
+        let from = Calendar.current.date(byAdding: .year, value: -5, to: now)
+            ?? now
+
+        let params = [
+            "FromDate": fmt.string(from: from),
+            "ToDate": fmt.string(from: now),
+            "ReturnRows": "1000",
+            "BalanceID": "",
+            "__RequestVerificationToken": token,
+        ]
+        let body = params
+            .map { "\(urlEncode($0.key))=\(urlEncode($0.value))" }
+            .joined(separator: "&")
+        req.httpBody = body.data(using: .utf8)
+
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data = data,
+                  let html = String(data: data, encoding: .utf8)
+            else { completion(nil); return }
+            completion(html)
+        }.resume()
+    }
+
     // MARK: - Parsing
 
     /// Pulls the form-field anti-forgery token out of the Dashboard HTML.
@@ -229,6 +293,78 @@ enum BalanceRefresher {
               let r = Range(m.range(at: 1), in: html)
         else { return nil }
         return String(html[r])
+    }
+
+    /// Parses the transaction-history table into the same shape the Dart
+    /// `Scraper.refreshTransactionsWidget` writes, so both the iOS and Android
+    /// widgets can decode it: `[{label, amount, date, isDebit}]`, newest first,
+    /// capped at 8 rows. No HTML parser on the native side, so we narrow to the
+    /// results table, split on rows, and pull each `data-title` cell by regex.
+    private static func parseTransactions(html: String) -> [[String: Any]] {
+        // Narrow to the results table so unrelated markup can't leak in.
+        guard let anchor = html.range(of: "transaction-history-result-table")
+        else { return [] }
+        let table = String(html[anchor.lowerBound...])
+
+        var result: [[String: Any]] = []
+        // The chunk before the first "<tr" is the table head/setup; row chunks
+        // follow. cellText returns "" for any chunk without the cell.
+        for row in table.components(separatedBy: "<tr") {
+            let dateTime = cellText(row, title: "Date - Time")
+            let type = cellText(row, title: "Type")
+            let amount = cellText(row, title: "Amount")
+            if dateTime.isEmpty && type.isEmpty && amount.isEmpty { continue }
+
+            // "102 : ACCOUNT ADJUSTMENT" -> "ACCOUNT ADJUSTMENT"
+            let label: String
+            if let colon = type.firstIndex(of: ":") {
+                label = String(type[type.index(after: colon)...])
+                    .trimmingCharacters(in: .whitespaces)
+            } else {
+                label = type
+            }
+
+            result.append([
+                "label": label,
+                // Site renders "$-0.14"; show "-$0.14" like the Dart side.
+                "amount": amount.replacingOccurrences(of: "$-", with: "-$"),
+                "date": dateTime,
+                "isDebit": amount.contains("-"),
+            ])
+            if result.count >= 8 { break }
+        }
+        return result
+    }
+
+    /// Extracts the trimmed text of the `<td data-title="...">` cell from a
+    /// single table-row chunk, stripping tags and decoding common entities.
+    private static func cellText(_ row: String, title: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: title)
+        let pattern = "data-title=\"\(escaped)\"[^>]*>([\\s\\S]*?)</td>"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let m = regex.firstMatch(
+                in: row, range: NSRange(row.startIndex..., in: row)
+              ),
+              m.numberOfRanges >= 2,
+              let r = Range(m.range(at: 1), in: row)
+        else { return "" }
+
+        var text = String(row[r])
+            .replacingOccurrences(
+                of: "<[^>]+>", with: " ", options: .regularExpression
+            )
+        let entities = [
+            "&nbsp;": " ", "&amp;": "&", "&lt;": "<",
+            "&gt;": ">", "&quot;": "\"", "&#39;": "'",
+        ]
+        for (k, v) in entities {
+            text = text.replacingOccurrences(of: k, with: v)
+        }
+        return text
+            .replacingOccurrences(
+                of: "\\s+", with: " ", options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func urlEncode(_ s: String) -> String {

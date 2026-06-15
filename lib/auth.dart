@@ -118,30 +118,40 @@ Future<String?> trySilentReauth() async {
   ) async {
     if (completer.isCompleted) return;
 
-    if (url != null && url.toString().contains("Account/Dashboard")) {
-      // Reached the Dashboard. The anti-forgery token confirms we're
-      // authenticated (vs. a login form served at the Dashboard URL).
-      final html = await controller.getHtml();
-      if (html == null ||
-          !html.contains('name="__RequestVerificationToken"')) {
+    // These callbacks fire-and-forget, so once the completer resolves (success
+    // or the 12s timeout) the `finally` below disposes the controller while an
+    // in-flight `evaluate` may still be awaiting `getHtml()`. Calling onto a
+    // disposed controller throws; with no `await` on the callback that becomes
+    // an *unhandled* async exception. Swallow it — by then we already have our
+    // answer and are tearing the headless webview down anyway.
+    try {
+      if (url != null && url.toString().contains("Account/Dashboard")) {
+        // Reached the Dashboard. The anti-forgery token confirms we're
+        // authenticated (vs. a login form served at the Dashboard URL).
+        final html = await controller.getHtml();
+        if (html == null ||
+            !html.contains('name="__RequestVerificationToken"')) {
+          return;
+        }
+        final header = await _harvestCookieHeader();
+        if (header == null) return;
+        await saveSession(header);
+        if (!completer.isCompleted) completer.complete(header);
         return;
       }
-      final header = await _harvestCookieHeader();
-      if (header == null) return;
-      await saveSession(header);
-      if (!completer.isCompleted) completer.complete(header);
-      return;
-    }
 
-    // Settled on a non-Dashboard page. A rendered password field means the
-    // persisted SSO session is dead and the flow is stuck waiting for the
-    // user — bail immediately instead of waiting out the timeout. (The CAS
-    // /login endpoint 302-redirects a *valid* SSO session straight through
-    // without rendering a form, so this only fires when login is truly
-    // required.)
-    final html = await controller.getHtml();
-    if (html != null && html.contains('type="password"')) {
-      if (!completer.isCompleted) completer.complete(null);
+      // Settled on a non-Dashboard page. A rendered password field means the
+      // persisted SSO session is dead and the flow is stuck waiting for the
+      // user — bail immediately instead of waiting out the timeout. (The CAS
+      // /login endpoint 302-redirects a *valid* SSO session straight through
+      // without rendering a form, so this only fires when login is truly
+      // required.)
+      final html = await controller.getHtml();
+      if (html != null && html.contains('type="password"')) {
+        if (!completer.isCompleted) completer.complete(null);
+      }
+    } catch (e) {
+      debugPrint("[silentReauth] evaluate skipped: $e");
     }
   }
 
