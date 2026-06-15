@@ -22,6 +22,9 @@ class Transaction {
   /// True when money left the account (amount is negative, e.g. "$-10.00").
   bool get isDebit => amount.contains('-');
 
+  /// Sign before the currency symbol: the site renders "$-0.14"; show "-$0.14".
+  String get displayAmount => amount.replaceFirst(r'$-', r'-$');
+
   /// "102 : ACCOUNT ADJUSTMENT" -> "ACCOUNT ADJUSTMENT"
   String get label {
     final i = type.indexOf(':');
@@ -159,7 +162,7 @@ class Scraper {
         .take(8)
         .map((t) => {
               'label': t.label,
-              'amount': t.amount,
+              'amount': t.displayAmount,
               'date': t.dateTime,
               'isDebit': t.isDebit,
             })

@@ -66,6 +66,35 @@ Future<String?> loadSession() async {
   return prefs.getString(_prefsKey);
 }
 
+/// Deletes only the session cookie (`.ASPXAUTH`) from the WebView jar, leaving
+/// the IdP / DUO "remember this device" cookies untouched.
+///
+/// When the server-side session expires, the `.ASPXAUTH` cookie is *not*
+/// removed from the browser — the server just stops honouring it. [LoginWebView]
+/// treats the cookie's mere presence as "already authenticated" and would commit
+/// that dead session without ever showing the login form, so the follow-up
+/// scrape fails with "couldn't load your balance". Clearing it forces a real
+/// re-auth, while [trySilentReauth] can still ride the persisted SSO cookies.
+Future<void> clearAuthCookie() async {
+  final cm = CookieManager.instance();
+  final url = WebUri(_dashboardUrl);
+  try {
+    for (final c in await cm.getCookies(url: url)) {
+      if (c.name == ".ASPXAUTH") {
+        final path = (c.path?.isNotEmpty ?? false) ? c.path! : "/";
+        await cm.deleteCookie(url: url, name: c.name, path: path);
+      }
+    }
+    // Backstop: getCookies can omit the path (notably on iOS), so also clear
+    // the conventional paths the cookie may have been scoped to.
+    for (final path in const ["/", "/C22566_oneweb"]) {
+      await cm.deleteCookie(url: url, name: ".ASPXAUTH", path: path);
+    }
+  } catch (_) {
+    // No cookie store / nothing to clear — re-auth will surface any real issue.
+  }
+}
+
 // ───────────────────────────── silent re-auth ──────────────────────────────
 
 /// No-UI re-login using the WebView's persisted cookie store (DUO's
@@ -132,11 +161,20 @@ Future<String?> trySilentReauth() async {
     },
   );
 
-  await headless.run();
-  final result = await completer.future
-      .timeout(const Duration(seconds: 12), onTimeout: () => null);
-  await headless.dispose();
-  return result;
+  try {
+    await headless.run();
+    return await completer.future
+        .timeout(const Duration(seconds: 12), onTimeout: () => null);
+  } catch (e) {
+    // Any headless-webview failure must fall through to the visible login
+    // popup, never bubble up and leave the user with no way to sign in.
+    debugPrint("[silentReauth] failed: $e");
+    return null;
+  } finally {
+    try {
+      await headless.dispose();
+    } catch (_) {}
+  }
 }
 
 // ───────────────────────────── visible login popup ─────────────────────────

@@ -313,7 +313,7 @@ class _TxnTile extends StatelessWidget {
             ),
           ),
           Text(
-            t.amount,
+            t.displayAmount,
             style: TextStyle(
               fontWeight: FontWeight.bold,
               fontSize: 15,

@@ -24,7 +24,7 @@ Future<void> main() async {
   // Background refresh so the home-screen widget updates without opening the
   // app. iOS: a one-off BGProcessingTask that re-queues itself (the native
   // BGAppRefreshTask in Swift is the primary path; this is a fallback). Android:
-  // a periodic WorkManager task (15-min floor; we ask for 30 to match iOS).
+  // a periodic WorkManager task at the 15-min OS floor.
   try {
     await Workmanager().initialize(_workmanagerCallback);
     if (Platform.isIOS) {
@@ -37,9 +37,14 @@ Future<void> main() async {
       await Workmanager().registerPeriodicTask(
         _refreshTaskId,
         _refreshTaskId,
-        frequency: const Duration(minutes: 30),
+        // 15 min is WorkManager's hard floor; ask for it so the widget refreshes
+        // as often as the OS allows.
+        frequency: const Duration(minutes: 15),
         constraints: Constraints(networkType: NetworkType.connected),
-        existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+        // `update` (not `keep`): `keep` ignores this registration whenever a
+        // task with the same name already exists, so an older build's frequency
+        // would stick forever. `update` re-applies the current spec each launch.
+        existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
       );
     }
   } catch (e) {
