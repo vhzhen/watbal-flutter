@@ -73,6 +73,26 @@ class WatBalWidgetReceiver : HomeWidgetProvider() {
                 )
             }
 
+            // Background-safe text update. This widget has a collection (the
+            // transaction ListView), so a full updateAppWidget makes the
+            // launcher bind TransactionsWidgetService — which Android blocks
+            // from a background broadcast, so the whole push (balance + time
+            // included) gets dropped and the widget freezes. A partial update
+            // touches only the text views (no adapter, no service bind), so the
+            // balance and "Updated …" time land reliably even in the background.
+            // The simple 1x1/2x2 tiles don't hit this because they have no list.
+            val textOnly = RemoteViews(context.packageName, R.layout.watbal_widget).apply {
+                setInt(R.id.widget_root, "setBackgroundResource", theme.backgroundRes)
+                setTextColor(R.id.widget_title, theme.secondary)
+                setTextViewText(R.id.widget_updated, updated)
+                setTextColor(R.id.widget_updated, theme.secondary)
+                setTextViewText(R.id.widget_balance, balance)
+                setTextColor(R.id.widget_balance, theme.primary)
+            }
+            appWidgetManager.partiallyUpdateAppWidget(id, textOnly)
+
+            // Full update refreshes the list too; lands in the foreground (and
+            // whenever the service can bind), and is harmless when it can't.
             appWidgetManager.updateAppWidget(id, views)
             appWidgetManager.notifyAppWidgetViewDataChanged(id, R.id.widget_list)
         }
