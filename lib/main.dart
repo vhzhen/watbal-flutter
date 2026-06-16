@@ -291,6 +291,25 @@ void _workmanagerCallback() {
     }
 
     await DebugLog.log("bg: workmanager task fired ($task)");
+
+    // If no widget is on the home screen, there's nothing to refresh — skip the
+    // scrape and (especially) the headless-WebView re-auth so we don't drain the
+    // battery updating a widget that isn't there. The task stays registered, so
+    // it resumes on its own once a widget is added. Android-only: iOS doesn't
+    // report installed widgets here, and its refresh path is a separate fallback.
+    if (Platform.isAndroid) {
+      try {
+        final widgets = await HomeWidget.getInstalledWidgets();
+        if (widgets.isEmpty) {
+          await DebugLog.log("bg: no widget placed; skipping");
+          return true;
+        }
+      } catch (e) {
+        // Couldn't determine widget state — proceed rather than silently stop.
+        await DebugLog.log("bg: widget check failed ($e); proceeding");
+      }
+    }
+
     try {
       var cookies = await loadSession();
       if (cookies == null) {
