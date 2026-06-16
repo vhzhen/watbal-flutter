@@ -131,10 +131,7 @@ class ThemeController extends ChangeNotifier {
     try {
       await HomeWidget.setAppGroupId('group.com.vincent.watbal');
       await HomeWidget.saveWidgetData<String>('app_theme', _theme.name);
-      await HomeWidget.updateWidget(
-        name: 'WatBalWidgetReceiver',
-        iOSName: 'WatBalWidget',
-      );
+      await reloadWatBalWidgets();
     } catch (_) {}
   }
 }

@@ -7,6 +7,24 @@ import 'package:http/http.dart' as http;
 
 import 'package:watbal/debug_log.dart';
 
+/// Broadcasts a reload to every WatBal home-screen widget. The full widget
+/// (balance + transactions) and the compact 1x1 widget read the same shared
+/// data, so a single data write feeds both — they just need separate update
+/// broadcasts. Each is guarded so a receiver that isn't placed (e.g. the user
+/// only added one of the two) can't block the other. The compact widget is
+/// Android-only; the `androidName` call is a no-op on iOS.
+Future<void> reloadWatBalWidgets() async {
+  try {
+    await HomeWidget.updateWidget(
+      name: 'WatBalWidgetReceiver',
+      iOSName: 'WatBalWidget',
+    );
+  } catch (_) {}
+  try {
+    await HomeWidget.updateWidget(androidName: 'WatBalSmallWidgetReceiver');
+  } catch (_) {}
+}
+
 /// One row from the TouchNet transaction-history table.
 class Transaction {
   final String dateTime;
@@ -184,10 +202,7 @@ class Scraper {
         'last_updated',
         DateTime.now().millisecondsSinceEpoch.toString(),
       );
-      await HomeWidget.updateWidget(
-        name: 'WatBalWidgetReceiver',
-        iOSName: 'WatBalWidget',
-      );
+      await reloadWatBalWidgets();
       await DebugLog.log("widget: touched last_updated + reload");
     } catch (e) {
       await DebugLog.log("widget: touch failed: $e");
@@ -230,10 +245,7 @@ class Scraper {
         'last_updated',
         DateTime.now().millisecondsSinceEpoch.toString(),
       );
-      await HomeWidget.updateWidget(
-        name: 'WatBalWidgetReceiver',
-        iOSName: 'WatBalWidget',
-      );
+      await reloadWatBalWidgets();
       await DebugLog.log(
         "widget: pushed $key=${value.length > 40 ? '${value.length} chars' : value} + reload",
       );
