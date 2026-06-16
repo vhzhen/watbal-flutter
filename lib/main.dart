@@ -292,6 +292,20 @@ void _workmanagerCallback() {
 
     await DebugLog.log("bg: workmanager task fired ($task)");
 
+    // Coalesce bursts. WorkManager can fire several deferred runs back-to-back
+    // after Doze (we've seen 3 land within 10s); each re-auths and hammers the
+    // widget host with update broadcasts, which is exactly what tips Android
+    // into throttling/freezing the widget. Skip if we ran in the last 60s.
+    // Cross-isolate-safe via SharedPreferences.
+    final prefs = await SharedPreferences.getInstance();
+    final lastRun = prefs.getInt('last_bg_run') ?? 0;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - lastRun < 60 * 1000) {
+      await DebugLog.log("bg: skipping duplicate run (<60s since last)");
+      return true;
+    }
+    await prefs.setInt('last_bg_run', nowMs);
+
     // If no widget is on the home screen, there's nothing to refresh — skip the
     // scrape and (especially) the headless-WebView re-auth so we don't drain the
     // battery updating a widget that isn't there. The task stays registered, so
