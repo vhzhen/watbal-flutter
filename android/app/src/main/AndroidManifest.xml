@@ -30,6 +30,7 @@
         <!-- Home-screen widget (mirrors the iOS WatBalWidget). -->
         <receiver
             android:name=".WatBalWidgetReceiver"
+            android:label="@string/watbal_widget_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -39,9 +40,25 @@
                 android:resource="@xml/watbal_widget_info" />
         </receiver>
 
+        <!-- 2x2 variant: same as the 1x1, just bigger. Declared before the 1x1
+             so it appears first in the widget picker (the launcher orders by
+             declaration order, not label). -->
+        <receiver
+            android:name=".WatBalMediumWidgetReceiver"
+            android:label="@string/watbal_widget_medium_label"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/watbal_widget_medium_info" />
+        </receiver>
+
         <!-- Compact 1x1 variant: balance + "Updated …" only, no list. -->
         <receiver
             android:name=".WatBalSmallWidgetReceiver"
+            android:label="@string/watbal_widget_small_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />

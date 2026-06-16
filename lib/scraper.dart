@@ -23,6 +23,9 @@ Future<void> reloadWatBalWidgets() async {
   try {
     await HomeWidget.updateWidget(androidName: 'WatBalSmallWidgetReceiver');
   } catch (_) {}
+  try {
+    await HomeWidget.updateWidget(androidName: 'WatBalMediumWidgetReceiver');
+  } catch (_) {}
 }
 
 /// One row from the TouchNet transaction-history table.
@@ -56,6 +59,58 @@ class Transaction {
     final i = terminal.indexOf(':');
     return (i >= 0 ? terminal.substring(i + 1) : terminal).trim();
   }
+
+  /// Parses [dateTime] into a DateTime for grouping/sorting. Tolerant of the
+  /// common shapes the site might emit — US slash ("6/14/2026 12:34:56 PM"),
+  /// ISO dash ("2026-06-14"), 2- or 4-digit year, optional time/AM-PM. Returns
+  /// null on anything unexpected so the UI falls back to the raw string.
+  DateTime? get parsedDate {
+    final s = dateTime.trim();
+    if (s.isEmpty) return null;
+    try {
+      final tokens = s.split(RegExp(r'\s+'));
+      final dateTok = tokens.first;
+      final sep = dateTok.contains('/')
+          ? '/'
+          : (dateTok.contains('-') ? '-' : null);
+      if (sep == null) return null;
+      final p = dateTok.split(sep);
+      if (p.length != 3) return null;
+
+      int year, month, day;
+      if (p[0].length == 4) {
+        // yyyy-MM-dd
+        year = int.parse(p[0]);
+        month = int.parse(p[1]);
+        day = int.parse(p[2]);
+      } else {
+        // MM/dd/yyyy (US)
+        month = int.parse(p[0]);
+        day = int.parse(p[1]);
+        year = int.parse(p[2]);
+        if (year < 100) year += 2000;
+      }
+      if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+      var hour = 0, minute = 0;
+      if (tokens.length >= 2 && tokens[1].contains(':')) {
+        final t = tokens[1].split(':');
+        hour = int.parse(t[0]);
+        if (t.length > 1) minute = int.parse(t[1]);
+        final ampm = tokens.length >= 3 ? tokens[2].toUpperCase() : '';
+        if (ampm == 'PM' && hour != 12) hour += 12;
+        if (ampm == 'AM' && hour == 12) hour = 0;
+      }
+      return DateTime(year, month, day, hour, minute);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Signed numeric value of the amount ("$-0.14" -> -0.14, "$5.00" -> 5.00).
+  /// 0 on parse failure. Debits are negative.
+  double get amountValue =>
+      double.tryParse(amount.replaceAll(RegExp(r'[^0-9.\-]'), '')) ?? 0;
 }
 
 /// All scraping against the TouchNet OneWeb dashboard. The site is a server-
@@ -181,7 +236,9 @@ class Scraper {
     final recent = txns
         .take(8)
         .map((t) => {
-              'label': t.label,
+              // Merchant name as the row title (matches the in-app list),
+              // falling back to the type description when it's blank.
+              'label': t.terminalLabel.isNotEmpty ? t.terminalLabel : t.label,
               'amount': t.displayAmount,
               'date': t.dateTime,
               'isDebit': t.isDebit,

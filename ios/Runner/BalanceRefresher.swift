@@ -309,20 +309,27 @@ enum BalanceRefresher {
         var result: [[String: Any]] = []
         // The chunk before the first "<tr" is the table head/setup; row chunks
         // follow. cellText returns "" for any chunk without the cell.
+        // "102 : ACCOUNT ADJUSTMENT" / "00024 : TIM HORTONS" -> the part after
+        // the colon.
+        func afterColon(_ s: String) -> String {
+            if let colon = s.firstIndex(of: ":") {
+                return String(s[s.index(after: colon)...])
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            return s.trimmingCharacters(in: .whitespaces)
+        }
+
         for row in table.components(separatedBy: "<tr") {
             let dateTime = cellText(row, title: "Date - Time")
             let type = cellText(row, title: "Type")
+            let terminal = cellText(row, title: "Terminal")
             let amount = cellText(row, title: "Amount")
             if dateTime.isEmpty && type.isEmpty && amount.isEmpty { continue }
 
-            // "102 : ACCOUNT ADJUSTMENT" -> "ACCOUNT ADJUSTMENT"
-            let label: String
-            if let colon = type.firstIndex(of: ":") {
-                label = String(type[type.index(after: colon)...])
-                    .trimmingCharacters(in: .whitespaces)
-            } else {
-                label = type
-            }
+            // Merchant (Terminal) as the row title, matching the in-app list and
+            // the Dart widget data; fall back to the Type description when blank.
+            let merchant = afterColon(terminal)
+            let label = merchant.isEmpty ? afterColon(type) : merchant
 
             result.append([
                 "label": label,

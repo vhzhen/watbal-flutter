@@ -2,4 +2,12 @@
 <resources>
     <string name="watbal_widget_description">Track your balance and recent transactions.</string>
     <string name="watbal_widget_small_description">A compact tile showing just your balance.</string>
+    <string name="watbal_widget_medium_description">A larger tile showing just your balance.</string>
+
+    <!-- Picker labels. The Android widget picker sorts a package's widgets
+         alphabetically by label, so these are named so the 2x2 ("Balance")
+         sorts before the 1x1 ("Balance (Small)"). -->
+    <string name="watbal_widget_label">WatBal</string>
+    <string name="watbal_widget_medium_label">WatBal Balance</string>
+    <string name="watbal_widget_small_label">WatBal Balance (Small)</string>
 </resources>
