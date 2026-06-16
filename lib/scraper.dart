@@ -4,8 +4,14 @@ import 'package:flutter/foundation.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:html/parser.dart' show parse;
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:watbal/debug_log.dart';
+
+/// SharedPreferences key holding the raw account name (e.g. "FLEXIBLE") the
+/// user chose to display on the home-screen widgets. Null/absent means "the
+/// first account". Read by the scraper when deciding which balance to push.
+const String kWidgetAccountKey = 'widget_account';
 
 /// Broadcasts a reload to every WatBal home-screen widget. The full widget
 /// (balance + transactions) and the compact 1x1 widget read the same shared
@@ -26,6 +32,32 @@ Future<void> reloadWatBalWidgets() async {
   try {
     await HomeWidget.updateWidget(androidName: 'WatBalMediumWidgetReceiver');
   } catch (_) {}
+}
+
+/// One row from the TouchNet "Available Balances" table. A user can hold more
+/// than one account type (e.g. FLEXIBLE plus a dining plan), so balances are
+/// always handled as a list.
+class AccountBalance {
+  /// Raw account name exactly as scraped, e.g. "FLEXIBLE". Used as the stable
+  /// key for the widget-account preference.
+  final String name;
+
+  /// Formatted amount as rendered by the site, e.g. "$0.44".
+  final String amount;
+
+  const AccountBalance({required this.name, required this.amount});
+
+  /// User-facing name. The site's internal "FLEXIBLE" reads as "FLEX DOLLARS";
+  /// any other account is title-cased from its raw name.
+  String get displayName {
+    if (name.toUpperCase() == 'FLEXIBLE') return 'FLEX DOLLARS';
+    return name
+        .split(RegExp(r'\s+'))
+        .map((w) => w.isEmpty
+            ? w
+            : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}')
+        .join(' ');
+  }
 }
 
 /// One row from the TouchNet transaction-history table.
@@ -155,13 +187,14 @@ class Scraper {
     );
   }
 
-  /// Scrapes the current FLEXIBLE balance ("$237.41"), writes it to the iOS
-  /// widget's shared app group, and returns it.
-  Future<String> fetchBalance(String cookies) async {
+  /// Scrapes every account in the "Available Balances" table, pushes the
+  /// user-selected account's balance to the home-screen widgets, and returns
+  /// the full list (a user may hold more than one account type).
+  Future<List<AccountBalance>> fetchBalances(String cookies) async {
     final token = await _token(cookies);
 
-    // KeepAlive is folded in so a single fetchBalance also resets the
-    // sliding-auth window — same shape the in-browser dashboard uses.
+    // KeepAlive is folded in so a single fetch also resets the sliding-auth
+    // window — same shape the in-browser dashboard uses.
     await http.post(
       Uri.parse("$_base/Layout/KeepAlive"),
       headers: _ajaxHeaders(cookies),
@@ -177,11 +210,30 @@ class Scraper {
       body: {"__RequestVerificationToken": token},
     );
 
-    final balance = _findBalanceAfter("FLEXIBLE", res.body);
-    if (balance == null) throw Exception("Balance not found");
+    final accounts = _parseBalances(res.body);
+    if (accounts.isEmpty) throw Exception("Balance not found");
 
-    await _pushToWidget('balance_text', balance);
-    return balance;
+    await pushSelectedBalanceToWidget(accounts);
+    return accounts;
+  }
+
+  /// Writes the user-selected account's balance (and its label) into the shared
+  /// widget data and reloads the widgets. Exposed so the settings screen can
+  /// re-push immediately when the user changes which account the widget shows,
+  /// without waiting for the next scrape.
+  Future<void> pushSelectedBalanceToWidget(
+      List<AccountBalance> accounts) async {
+    if (accounts.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final selected = prefs.getString(kWidgetAccountKey);
+    final chosen = accounts.firstWhere(
+      (a) => a.name == selected,
+      orElse: () => accounts.first,
+    );
+    await _pushWidgetData({
+      'balance_text': chosen.amount,
+      'balance_label': chosen.displayName,
+    });
   }
 
   /// Scrapes the transaction history table for a date range. The page tops
@@ -280,6 +332,33 @@ class Scraper {
       "${d.month.toString().padLeft(2, '0')}/"
       "${d.day.toString().padLeft(2, '0')}/${d.year}";
 
+  /// Parses every row of the "Available Balances" table. Each row is
+  /// `Name | Type | Amount | Credit`; we take the name (its `title` attribute
+  /// when present, so the full value survives the ellipsis truncation) and the
+  /// first right-aligned cell (the Amount column). Rows without a `$` amount are
+  /// skipped. Falls back to a permissive FLEXIBLE regex if the table markup
+  /// isn't what we expect, so a single-account user is never left empty-handed.
+  List<AccountBalance> _parseBalances(String html) {
+    final out = <AccountBalance>[];
+    for (final row in parse(html).querySelectorAll('table tbody tr')) {
+      final nameCell = row.querySelector('td');
+      if (nameCell == null) continue;
+      final name = (nameCell.querySelector('[title]')?.attributes['title'] ??
+              nameCell.text)
+          .trim();
+      final amount = row.querySelector('td.text-right')?.text.trim() ?? '';
+      if (name.isEmpty || !amount.contains(r'$')) continue;
+      out.add(AccountBalance(name: name, amount: amount));
+    }
+    if (out.isEmpty) {
+      final fallback = _findBalanceAfter("FLEXIBLE", html);
+      if (fallback != null) {
+        out.add(AccountBalance(name: "FLEXIBLE", amount: fallback));
+      }
+    }
+    return out;
+  }
+
   /// Finds the first `$X.XX` value that appears after [marker] in the HTML.
   /// The balance row markup varies (table cells, divs, spans) so a permissive
   /// regex on raw HTML is more robust than DOM walking.
@@ -294,21 +373,28 @@ class Scraper {
   /// timeline. Also updates the `last_updated` timestamp so the widget can
   /// show "Updated Xm ago". Failures are non-fatal — Android dev for example
   /// has no widget extension.
-  Future<void> _pushToWidget(String key, String value) async {
+  Future<void> _pushToWidget(String key, String value) =>
+      _pushWidgetData({key: value});
+
+  /// Saves several shared keys at once, bumps `last_updated`, then issues a
+  /// single widget reload. Batching the writes behind one reload matters:
+  /// rapid-fire broadcasts get coalesced (and can freeze the launcher), so the
+  /// balance + its label must land together under one broadcast.
+  Future<void> _pushWidgetData(Map<String, String> data) async {
     try {
       await HomeWidget.setAppGroupId(_appGroupId);
-      await HomeWidget.saveWidgetData<String>(key, value);
+      for (final e in data.entries) {
+        await HomeWidget.saveWidgetData<String>(e.key, e.value);
+      }
       await HomeWidget.saveWidgetData<String>(
         'last_updated',
         DateTime.now().millisecondsSinceEpoch.toString(),
       );
       await reloadWatBalWidgets();
-      await DebugLog.log(
-        "widget: pushed $key=${value.length > 40 ? '${value.length} chars' : value} + reload",
-      );
+      await DebugLog.log("widget: pushed ${data.keys.join(', ')} + reload");
     } catch (e) {
       debugPrint("Widget update skipped: $e");
-      await DebugLog.log("widget: push failed for $key: $e");
+      await DebugLog.log("widget: push failed (${data.keys.join(', ')}): $e");
     }
   }
 }

@@ -32,6 +32,7 @@ class WatBalWidgetReceiver : HomeWidgetProvider() {
     ) {
         val theme = WidgetTheme.named(widgetData.getString("app_theme", "light"))
         val balance = widgetData.getString("balance_text", "\$--.--") ?: "\$--.--"
+        val label = widgetData.getString("balance_label", null) ?: "WatBal"
         val updated = formatUpdated(widgetData.getString("last_updated", null))
 
         // Tag: WatBalWidget — `adb logcat -s WatBalWidget` shows each render so
@@ -46,6 +47,7 @@ class WatBalWidgetReceiver : HomeWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.watbal_widget)
 
             views.setInt(R.id.widget_root, "setBackgroundResource", theme.backgroundRes)
+            views.setTextViewText(R.id.widget_title, label)
             views.setTextColor(R.id.widget_title, theme.secondary)
             views.setTextViewText(R.id.widget_updated, updated)
             views.setTextColor(R.id.widget_updated, theme.secondary)
@@ -83,6 +85,7 @@ class WatBalWidgetReceiver : HomeWidgetProvider() {
             // The simple 1x1/2x2 tiles don't hit this because they have no list.
             val textOnly = RemoteViews(context.packageName, R.layout.watbal_widget).apply {
                 setInt(R.id.widget_root, "setBackgroundResource", theme.backgroundRes)
+                setTextViewText(R.id.widget_title, label)
                 setTextColor(R.id.widget_title, theme.secondary)
                 setTextViewText(R.id.widget_updated, updated)
                 setTextColor(R.id.widget_updated, theme.secondary)

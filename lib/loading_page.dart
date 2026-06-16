@@ -14,7 +14,7 @@ import 'package:watbal/scraper.dart';
 /// The whole point is that steps 2-most-of-the-time means the user almost
 /// never sees a "please sign in" dialog after their first real login.
 class LoadingPage extends StatefulWidget {
-  final void Function(String balance) onLoaded;
+  final void Function(List<AccountBalance> accounts) onLoaded;
   const LoadingPage({super.key, required this.onLoaded});
 
   @override
@@ -46,8 +46,8 @@ class _LoadingPageState extends State<LoadingPage> {
       _status = "Fetching your balance…";
     });
     try {
-      final balance = await Scraper().fetchBalance(cookies);
-      if (mounted) widget.onLoaded(balance);
+      final accounts = await Scraper().fetchBalances(cookies);
+      if (mounted) widget.onLoaded(accounts);
     } catch (_) {
       if (!mounted) return;
       if (fromLogin) {

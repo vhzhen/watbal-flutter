@@ -28,6 +28,7 @@ class WatBalSmallWidgetReceiver : HomeWidgetProvider() {
     ) {
         val theme = WidgetTheme.named(widgetData.getString("app_theme", "light"))
         val balance = widgetData.getString("balance_text", "\$--.--") ?: "\$--.--"
+        val label = widgetData.getString("balance_label", null) ?: "WatBal"
         val updated = formatUpdated(widgetData.getString("last_updated", null))
 
         Log.d(
@@ -39,6 +40,7 @@ class WatBalSmallWidgetReceiver : HomeWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.watbal_widget_small)
 
             views.setInt(R.id.widget_root, "setBackgroundResource", theme.backgroundRes)
+            views.setTextViewText(R.id.widget_title, label)
             views.setTextColor(R.id.widget_title, theme.secondary)
             views.setTextViewText(R.id.widget_balance, balance)
             views.setTextColor(R.id.widget_balance, theme.primary)

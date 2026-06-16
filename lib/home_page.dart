@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:watbal/auth.dart';
 import 'package:watbal/log_viewer_page.dart';
@@ -10,16 +11,16 @@ import 'package:watbal/scraper.dart';
 /// transaction history grouped by date, newest first. Pull-to-refresh refreshes
 /// balance and history together.
 class HomePage extends StatefulWidget {
-  final String balance;
+  final List<AccountBalance> accounts;
   final ThemeController theme;
-  final ValueChanged<String> onBalanceChanged;
+  final ValueChanged<List<AccountBalance>> onAccountsChanged;
   final VoidCallback onSignedOut;
 
   const HomePage({
     super.key,
-    required this.balance,
+    required this.accounts,
     required this.theme,
-    required this.onBalanceChanged,
+    required this.onAccountsChanged,
     required this.onSignedOut,
   });
 
@@ -78,7 +79,7 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     try {
-      final balance = await _scraper.fetchBalance(cookies);
+      final accounts = await _scraper.fetchBalances(cookies);
       final txns = await _scraper.fetchTransactions(
         cookies,
         from: _from,
@@ -91,7 +92,7 @@ class _HomePageState extends State<HomePage> {
         _error = null;
         _refreshing = false;
       });
-      widget.onBalanceChanged(balance);
+      widget.onAccountsChanged(accounts);
     } catch (e) {
       if (!mounted) return;
       if (e.toString().contains("Expired")) {
@@ -180,7 +181,7 @@ class _HomePageState extends State<HomePage> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            SliverToBoxAdapter(child: _hero(scheme)),
+            SliverToBoxAdapter(child: _heroes(scheme)),
             SliverToBoxAdapter(child: _summary(scheme)),
             SliverToBoxAdapter(child: _searchFilter(scheme)),
             ..._content(scheme),
@@ -190,24 +191,45 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _hero(ColorScheme scheme) {
+  /// One hero card per account, stacked. With a single account this is the
+  /// familiar full-size hero; with several, each gets its own card and only the
+  /// first carries the "Updated …" pill (it applies to all of them).
+  Widget _heroes(ColorScheme scheme) {
+    final accounts = widget.accounts;
+    return Column(
+      children: [
+        for (var i = 0; i < accounts.length; i++)
+          Padding(
+            padding: EdgeInsets.fromLTRB(16, i == 0 ? 8 : 12, 16, 0),
+            child: _heroCard(scheme, accounts[i], showUpdated: i == 0),
+          ),
+      ],
+    );
+  }
+
+  Widget _heroCard(
+    ColorScheme scheme,
+    AccountBalance account, {
+    required bool showUpdated,
+  }) {
     final onContainer = scheme.onPrimaryContainer;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
-        decoration: BoxDecoration(
-          color: scheme.primaryContainer,
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  "FLEXIBLE",
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer,
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  account.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: onContainer.withValues(alpha: 0.7),
                     fontSize: 12,
@@ -215,22 +237,21 @@ class _HomePageState extends State<HomePage> {
                     letterSpacing: 1.4,
                   ),
                 ),
-                const Spacer(),
-                _updatedPill(scheme),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              widget.balance,
-              style: TextStyle(
-                fontSize: 52,
-                fontWeight: FontWeight.w800,
-                color: onContainer,
-                letterSpacing: -1.5,
               ),
+              if (showUpdated) _updatedPill(scheme),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            account.amount,
+            style: TextStyle(
+              fontSize: 52,
+              fontWeight: FontWeight.w800,
+              color: onContainer,
+              letterSpacing: -1.5,
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -413,6 +434,7 @@ class _HomePageState extends State<HomePage> {
       context: context,
       builder: (_) => _SettingsDialog(
         theme: widget.theme,
+        accounts: widget.accounts,
         onSignedOut: () {
           Navigator.of(context).pop();
           widget.onSignedOut();
@@ -522,7 +544,7 @@ class _TxnTile extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             child: Icon(
-              debit ? Icons.arrow_outward : Icons.south_west,
+              debit ? Icons.south_west : Icons.arrow_outward,
               color: accent,
               size: 18,
             ),
@@ -575,11 +597,51 @@ class _TxnTile extends StatelessWidget {
 
 // ────────────────────────────── settings dialog ────────────────────────────
 
-class _SettingsDialog extends StatelessWidget {
+class _SettingsDialog extends StatefulWidget {
   final ThemeController theme;
+  final List<AccountBalance> accounts;
   final VoidCallback onSignedOut;
 
-  const _SettingsDialog({required this.theme, required this.onSignedOut});
+  const _SettingsDialog({
+    required this.theme,
+    required this.accounts,
+    required this.onSignedOut,
+  });
+
+  @override
+  State<_SettingsDialog> createState() => _SettingsDialogState();
+}
+
+class _SettingsDialogState extends State<_SettingsDialog> {
+  String? _widgetAccount;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadWidgetAccount();
+  }
+
+  Future<void> _loadWidgetAccount() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(kWidgetAccountKey);
+    if (!mounted) return;
+    setState(() {
+      // Default to the first account when nothing is saved (or the saved one
+      // no longer exists), matching what the scraper actually pushes.
+      _widgetAccount = widget.accounts.any((a) => a.name == saved)
+          ? saved
+          : (widget.accounts.isEmpty ? null : widget.accounts.first.name);
+    });
+  }
+
+  Future<void> _selectWidgetAccount(String name) async {
+    setState(() => _widgetAccount = name);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kWidgetAccountKey, name);
+    // Re-push immediately so the home-screen widget switches without waiting
+    // for the next scrape.
+    await Scraper().pushSelectedBalanceToWidget(widget.accounts);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -613,7 +675,7 @@ class _SettingsDialog extends StatelessWidget {
                 )),
             const SizedBox(height: 16),
             ListenableBuilder(
-              listenable: theme,
+              listenable: widget.theme,
               builder: (context, _) => Wrap(
                 alignment: WrapAlignment.center,
                 spacing: 16,
@@ -621,12 +683,43 @@ class _SettingsDialog extends StatelessWidget {
                 children: AppTheme.values
                     .map((t) => _ThemeSwatch(
                           option: t,
-                          selected: theme.theme == t,
-                          onTap: () => theme.set(t),
+                          selected: widget.theme.theme == t,
+                          onTap: () => widget.theme.set(t),
                         ))
                     .toList(),
               ),
             ),
+            if (widget.accounts.length > 1) ...[
+              const SizedBox(height: 24),
+              Text("Widget account",
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  )),
+              const SizedBox(height: 4),
+              RadioGroup<String>(
+                groupValue: _widgetAccount,
+                onChanged: (v) {
+                  if (v != null) _selectWidgetAccount(v);
+                },
+                child: Column(
+                  children: widget.accounts
+                      .map(
+                        (a) => RadioListTile<String>(
+                          value: a.name,
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          title: Text(a.displayName),
+                          secondary: Text(
+                            a.amount,
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             const Divider(height: 1),
             const SizedBox(height: 12),
@@ -652,7 +745,7 @@ class _SettingsDialog extends StatelessWidget {
               child: TextButton.icon(
                 onPressed: () async {
                   await clearSession();
-                  onSignedOut();
+                  widget.onSignedOut();
                 },
                 icon: const Icon(Icons.logout),
                 label: const Text("Sign out"),

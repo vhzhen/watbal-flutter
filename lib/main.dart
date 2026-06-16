@@ -147,7 +147,7 @@ class WatBalApp extends StatefulWidget {
 class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
   final ThemeController _theme = ThemeController();
   Timer? _keepAlive;
-  String? _balance;
+  List<AccountBalance>? _accounts;
   DateTime? _lastResumeRefresh;
 
   @override
@@ -226,8 +226,8 @@ class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
         return;
       }
       final scraper = Scraper();
-      final balance = await scraper.fetchBalance(cookies);
-      await DebugLog.log("resume: balance = $balance");
+      final accounts = await scraper.fetchBalances(cookies);
+      await DebugLog.log("resume: balances = ${_logBalances(accounts)}");
       // Best-effort — transactions failure shouldn't poison the balance push.
       try {
         await scraper.refreshTransactionsWidget(cookies);
@@ -248,15 +248,15 @@ class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
       builder: (context, _) => MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: _theme.theme.themeData,
-        home: _balance == null
+        home: _accounts == null
             ? LoadingPage(
-                onLoaded: (b) => setState(() => _balance = b),
+                onLoaded: (a) => setState(() => _accounts = a),
               )
             : HomePage(
-                balance: _balance!,
+                accounts: _accounts!,
                 theme: _theme,
-                onBalanceChanged: (b) => setState(() => _balance = b),
-                onSignedOut: () => setState(() => _balance = null),
+                onAccountsChanged: (a) => setState(() => _accounts = a),
+                onSignedOut: () => setState(() => _accounts = null),
               ),
       ),
     );
@@ -266,6 +266,11 @@ class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
 // ───────────────────────── workmanager background ──────────────────────────
 
 const String _refreshTaskId = 'com.vincent.watbal.refresh';
+
+/// Compact one-line summary of scraped accounts for the debug log, e.g.
+/// "FLEXIBLE=$0.44, MEAL=$120.00".
+String _logBalances(List<AccountBalance> accounts) =>
+    accounts.map((a) => "${a.name}=${a.amount}").join(", ");
 
 /// Background isolate entry point. Re-queues itself, then does a best-effort
 /// balance + transactions refresh. If the session has expired (no token in
@@ -330,8 +335,8 @@ void _workmanagerCallback() {
       final scraper = Scraper();
 
       try {
-        final balance = await scraper.fetchBalance(cookies);
-        await DebugLog.log("bg: balance = $balance");
+        final accounts = await scraper.fetchBalances(cookies);
+        await DebugLog.log("bg: balances = ${_logBalances(accounts)}");
       } catch (e) {
         // Only "Session Expired" is recoverable in the background: the saved
         // TouchNet cookie is dead, but the SSO / DUO "remember this device"
@@ -348,8 +353,8 @@ void _workmanagerCallback() {
           return true;
         }
         cookies = fresh;
-        final balance = await scraper.fetchBalance(cookies);
-        await DebugLog.log("bg: re-auth ok; balance = $balance");
+        final accounts = await scraper.fetchBalances(cookies);
+        await DebugLog.log("bg: re-auth ok; balances = ${_logBalances(accounts)}");
       }
 
       try {

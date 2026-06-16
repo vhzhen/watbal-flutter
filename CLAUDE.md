@@ -10,7 +10,7 @@ but is lower priority.
 1. First run: opens an in-app WebView at
    `https://secure.touchnet.net/C22566_oneweb/Account/Dashboard`. Detects login
    success by the `.ASPXAUTH` cookie and saves the full cookie header.
-2. Later runs: scrapes headlessly with the saved cookies — the FLEXIBLE balance
+2. Later runs: scrapes headlessly with the saved cookies — all account balances
    and recent transactions.
 3. Shows it on a single scrollable home screen (balance hero, spending summary,
    search, transactions grouped by date) and pushes it to home-screen widgets.
@@ -55,7 +55,12 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
 
 1. `GET /Account/Dashboard` → parse `__RequestVerificationToken`.
 2. `POST /Layout/KeepAlive` with the token (resets the sliding session).
-3. `POST /Deposit/Home/Balances` → first `$X.XX` after the "FLEXIBLE" label.
+3. `POST /Deposit/Home/Balances` → parse every row of the "Available Balances"
+   table into `AccountBalance { name, amount }` (a user may hold more than one
+   account type). `displayName` maps the site's "FLEXIBLE" → "FLEX DOLLARS";
+   any other account is title-cased. The app shows one hero per account; the
+   widget shows the user-chosen account (pref key `widget_account`, default =
+   first account), pushed as `balance_text` + `balance_label`.
 4. Transactions: `POST /TransactionHistory/TransactionsPass` (5-year window, 1000
    rows) → rows from `#transaction-history-result-table`. `Transaction` exposes
    `label` (type), `terminalLabel` (merchant), `displayAmount`, `isDebit`,
@@ -79,7 +84,8 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
 ## Widgets
 
 Shared `home_widget` data keys (app group / android prefs `group.com.vincent.watbal`):
-`balance_text`, `transactions_json`, `last_updated`, `app_theme`.
+`balance_text`, `balance_label` (selected account's display name, shown as the
+widget title), `transactions_json`, `last_updated`, `app_theme`.
 `reloadWatBalWidgets()` (scraper.dart) broadcasts a reload to every receiver.
 
 | Platform | Name | Content |
