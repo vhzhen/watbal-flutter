@@ -2,7 +2,6 @@ package com.example.watbal
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.widget.RemoteViews
 import android.widget.RemoteViewsService
 import es.antonborri.home_widget.HomeWidgetPlugin
@@ -64,7 +63,7 @@ private class TransactionsFactory(
 
     override fun getViewAt(position: Int): RemoteViews {
         val txn = items[position]
-        val accent = if (txn.isDebit) Color.parseColor("#FF3B30") else Color.parseColor("#34C759")
+        val accent = if (txn.isDebit) theme.debit else theme.credit
         return RemoteViews(context.packageName, R.layout.watbal_widget_row).apply {
             setTextViewText(R.id.row_arrow, if (txn.isDebit) "↓" else "↑")
             setTextColor(R.id.row_arrow, accent)

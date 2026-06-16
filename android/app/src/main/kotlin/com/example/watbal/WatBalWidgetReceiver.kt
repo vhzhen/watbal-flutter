@@ -114,33 +114,47 @@ class WatBalWidgetReceiver : HomeWidgetProvider() {
     }
 }
 
-/// Theme palette mirroring iOS `WidgetTheme`. Background is a rounded drawable
-/// (one per theme) so corners survive; text colors are applied programmatically.
+/// Theme palette that mirrors the Flutter app's Material 3 "vibrant" scheme so
+/// the widget matches the in-app balance hero in every theme (including dark).
+/// The card background is `primaryContainer` (a rounded drawable per theme so
+/// corners survive); [primary]/[text] are `onPrimaryContainer`, [secondary] is
+/// the same at 70% alpha, and [debit]/[credit] are accents chosen to stay
+/// legible on each card. Values come straight from
+/// `ColorScheme.fromSeed(seed, brightness, vibrant)` — see [AppTheme] in
+/// main.dart; keep the two in sync if the app themes change.
 data class WidgetTheme(
     val backgroundRes: Int,
     val primary: Int,
     val text: Int,
     val secondary: Int,
+    val debit: Int,
+    val credit: Int,
 ) {
     companion object {
         fun named(name: String?): WidgetTheme = when (name) {
             "dark" -> WidgetTheme(
                 R.drawable.watbal_widget_bg_dark,
-                Color.parseColor("#6699FF"),
-                Color.WHITE,
-                Color.parseColor("#99FFFFFF"),
+                Color.parseColor("#D1E4FF"), // onPrimaryContainer
+                Color.parseColor("#D1E4FF"),
+                Color.parseColor("#B3D1E4FF"), // 70% alpha
+                Color.parseColor("#FFB4AB"), // error (light, for the dark card)
+                Color.parseColor("#7CDB8A"),
             )
             "green" -> WidgetTheme(
                 R.drawable.watbal_widget_bg_green,
-                Color.parseColor("#2E7D32"),
-                Color.parseColor("#1A2E1A"),
-                Color.parseColor("#4D664D"),
+                Color.parseColor("#005313"), // onPrimaryContainer
+                Color.parseColor("#005313"),
+                Color.parseColor("#B3005313"),
+                Color.parseColor("#8C1414"),
+                Color.parseColor("#1B5E20"),
             )
             else -> WidgetTheme(
                 R.drawable.watbal_widget_bg_light,
-                Color.parseColor("#007AFF"),
-                Color.BLACK,
-                Color.parseColor("#8E8E93"),
+                Color.parseColor("#00497D"), // onPrimaryContainer
+                Color.parseColor("#00497D"),
+                Color.parseColor("#B300497D"),
+                Color.parseColor("#BA1A1A"), // error
+                Color.parseColor("#1B6B2E"),
             )
         }
     }

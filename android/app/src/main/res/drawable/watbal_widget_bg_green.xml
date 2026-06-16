@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#EDF7ED" />
+    <!-- ColorScheme.fromSeed(green, light, vibrant).primaryContainer — matches
+         the in-app balance hero. -->
+    <solid android:color="#70FF77" />
     <corners android:radius="20dp" />
 </shape>
