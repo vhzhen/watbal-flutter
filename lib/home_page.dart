@@ -286,12 +286,6 @@ class _HomeController extends ChangeNotifier {
   bool refreshing = false;
   String? error;
 
-  // 5-year window so we always have plenty of recent activity.
-  DateTime get _from {
-    final now = DateTime.now();
-    return DateTime(now.year - 5, now.month, now.day);
-  }
-
   Future<void> load() async {
     final cookies = await loadSession();
     if (cookies == null) {
@@ -299,19 +293,26 @@ class _HomeController extends ChangeNotifier {
       return;
     }
     try {
-      _txns = await _scraper.fetchTransactions(
-        cookies,
-        from: _from,
-        to: DateTime.now(),
-      );
-      // fetchTransactions just ensured the map is current; this is a cache
+      // Render whatever the last sync left on disk immediately — the sync
+      // below then folds in only what's new.
+      final cached = await _scraper.loadCachedTransactions();
+      if (cached != null) {
+        _txns = cached;
+        _balanceIds = await _scraper.ensureBalanceIdMap(cookies);
+        notifyListeners();
+      }
+
+      _txns = await _scraper.syncTransactions(cookies);
+      // syncTransactions just ensured the map is current; this is a cache
       // read, not another request.
       _balanceIds = await _scraper.ensureBalanceIdMap(cookies);
       notifyListeners();
     } catch (e) {
       if (e.toString().contains("Expired")) {
         onSignedOut();
-      } else {
+      } else if (_txns == null) {
+        // Only surface the failure when there's nothing to show — with the
+        // cache on screen, a failed incremental sync is just staleness.
         error = "Couldn't load transactions.";
         notifyListeners();
       }
@@ -328,11 +329,7 @@ class _HomeController extends ChangeNotifier {
     }
     try {
       final fresh = await _scraper.fetchBalances(cookies);
-      _txns = await _scraper.fetchTransactions(
-        cookies,
-        from: _from,
-        to: DateTime.now(),
-      );
+      _txns = await _scraper.syncTransactions(cookies);
       _balanceIds = await _scraper.ensureBalanceIdMap(cookies);
       _accounts = fresh;
       updated = DateTime.now();
@@ -940,7 +937,7 @@ class _TxnTile extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             child: Icon(
-              debit ? Icons.south_west : Icons.arrow_outward,
+              debit ? Icons.arrow_downward : Icons.arrow_upward,
               color: accent,
               size: 18,
             ),

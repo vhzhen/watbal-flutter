@@ -20,6 +20,25 @@ const String kWidgetAccountKey = 'widget_account';
 /// [Scraper.fetchBalanceIdMap]; read via [Scraper.ensureBalanceIdMap].
 const String kBalanceIdMapKey = 'account_balance_ids';
 
+/// SharedPreferences key holding every transaction row ever scraped, as a
+/// JSON list (newest first). This cache is what makes transaction fetches
+/// incremental: [Scraper.syncTransactions] only asks the site for rows since
+/// the newest cached one. Wiped by [clearScraperCache] on sign-out.
+const String kCachedTransactionsKey = 'cached_transactions';
+
+/// Wipes all locally cached scrape state — the transaction cache and the
+/// account ↔ balance-ID map, both on disk and in the isolate-static memos.
+/// Must be called on sign-out: the next user's data must never merge into
+/// this one's.
+Future<void> clearScraperCache() async {
+  Scraper._txnCache = null;
+  Scraper._balanceIdCache = null;
+  Scraper._unmappableIds.clear();
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(kCachedTransactionsKey);
+  await prefs.remove(kBalanceIdMapKey);
+}
+
 /// User-facing name for a raw scraped account name. The site's internal
 /// "FLEXIBLE" reads as "FLEX DOLLARS"; any other account is title-cased.
 String accountDisplayName(String name) {
@@ -90,6 +109,23 @@ class Transaction {
     required this.amount,
     this.balanceId = '',
   });
+
+  /// Round-tripping for the on-device cache ([kCachedTransactionsKey]).
+  factory Transaction.fromJson(Map<String, dynamic> json) => Transaction(
+        dateTime: json['dateTime'] as String? ?? '',
+        type: json['type'] as String? ?? '',
+        terminal: json['terminal'] as String? ?? '',
+        amount: json['amount'] as String? ?? '',
+        balanceId: json['balanceId'] as String? ?? '',
+      );
+
+  Map<String, dynamic> toJson() => {
+        'dateTime': dateTime,
+        'type': type,
+        'terminal': terminal,
+        'amount': amount,
+        'balanceId': balanceId,
+      };
 
   /// True when money left the account (amount is negative, e.g. "$-10.00").
   bool get isDebit => amount.contains('-');
@@ -253,8 +289,92 @@ class Scraper {
     });
   }
 
+  // ─────────────────── incremental transaction sync ───────────────────
+
+  /// Isolate-local copy of the on-disk transaction cache, so repeated syncs
+  /// don't re-read and re-decode prefs.
+  static List<Transaction>? _txnCache;
+
+  /// FromDate for the very first sync, when nothing is cached — far enough
+  /// back to cover any account's full history in one request.
+  static final DateTime _txnEpoch = DateTime(2000, 3, 9);
+
+  /// The cached transactions (newest first), or null when nothing has ever
+  /// been synced. This is what the UI should render immediately on launch,
+  /// before any network round trip.
+  Future<List<Transaction>?> loadCachedTransactions() async {
+    if (_txnCache != null) return _txnCache;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(kCachedTransactionsKey);
+    if (raw == null) return null;
+    try {
+      _txnCache = (jsonDecode(raw) as List)
+          .map((e) => Transaction.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (e) {
+      // Unreadable cache (e.g. a schema change) — fall back to a full sync.
+      await DebugLog.log("txns: cache unreadable ($e); resyncing from epoch");
+      return null;
+    }
+    return _txnCache;
+  }
+
+  /// Incremental fetch: asks the site only for rows since the day *before*
+  /// the newest cached transaction (the one-day overlap absorbs same-day rows
+  /// that landed after the last sync), merges them into the cache, and
+  /// returns the full history. First run (empty cache) fetches everything
+  /// since [_txnEpoch].
+  Future<List<Transaction>> syncTransactions(String cookies) async {
+    final cached = await loadCachedTransactions();
+
+    DateTime? newest;
+    for (final t in cached ?? const <Transaction>[]) {
+      final d = t.parsedDate;
+      if (d != null && (newest == null || d.isAfter(newest))) newest = d;
+    }
+    final from = newest == null
+        ? _txnEpoch
+        : DateTime(newest.year, newest.month, newest.day)
+            .subtract(const Duration(days: 1));
+
+    final fresh =
+        await fetchTransactions(cookies, from: from, to: DateTime.now());
+
+    // The server is authoritative for the requested window: keep only cached
+    // rows strictly before it, take the fresh rows wholesale. (Deduplicating
+    // by row content instead would wrongly collapse two identical same-second
+    // purchases.) Cached rows with unparseable dates are dropped — if dates
+    // ever stop parsing, `newest` is null and we resync from the epoch anyway.
+    final merged = <Transaction>[
+      ...fresh,
+      ...?cached?.where((t) {
+        final d = t.parsedDate;
+        return d != null && d.isBefore(from);
+      }),
+    ];
+    merged.sort((a, b) {
+      final da = a.parsedDate, db = b.parsedDate;
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return db.compareTo(da);
+    });
+
+    _txnCache = merged;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      kCachedTransactionsKey,
+      jsonEncode([for (final t in merged) t.toJson()]),
+    );
+    await DebugLog.log(
+        "txns: synced ${fresh.length} rows since ${_fmt(from)}; cache now ${merged.length}");
+    return merged;
+  }
+
   /// Scrapes the transaction history table for a date range. The page tops
-  /// out at 1000 rows; we cap the request there.
+  /// out at 1000 rows; we cap the request there. Most callers want
+  /// [syncTransactions] instead — this hits the site for the whole window
+  /// every time.
   Future<List<Transaction>> fetchTransactions(
     String cookies, {
     required DateTime from,
@@ -424,16 +544,10 @@ class Scraper {
     return out;
   }
 
-  /// Refreshes the iOS transactions widget with the 8 most-recent rows. Uses
-  /// a 5-year query so the widget always shows the newest activity regardless
-  /// of any in-app date filter the user has set.
+  /// Refreshes the transactions widget with the 8 most-recent rows, via the
+  /// incremental sync (which returns the full history newest-first).
   Future<void> refreshTransactionsWidget(String cookies) async {
-    final now = DateTime.now();
-    final txns = await fetchTransactions(
-      cookies,
-      from: DateTime(now.year - 5, now.month, now.day),
-      to: now,
-    );
+    final txns = await syncTransactions(cookies);
     final recent = txns
         .take(8)
         .map((t) => {

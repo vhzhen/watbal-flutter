@@ -81,11 +81,20 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
    any other account is title-cased. The app shows one hero per account; the
    widget shows the user-chosen account (pref key `widget_account`, default =
    first account), pushed as `balance_text` + `balance_label`.
-4. Transactions: `POST /TransactionHistory/TransactionsPass` (5-year window, 1000
-   rows) → rows from `#transaction-history-result-table`. `Transaction` exposes
-   `label` (type), `terminalLabel` (merchant), `displayAmount`, `isDebit`,
-   `parsedDate`, `amountValue`, `balanceId` (the `Balance` column — the site's
-   opaque account number, e.g. FLEXIBLE=5).
+4. Transactions are synced **incrementally**: all rows live in a local cache
+   (pref `cached_transactions`, JSON, newest first, plus an isolate-static
+   memo). `syncTransactions` computes FromDate = newest cached row's date − 1
+   day (empty cache → 03/09/2000), fetches only that window via
+   `fetchTransactions` (`POST /TransactionHistory/TransactionsPass`, 1000-row
+   cap, rows from `#transaction-history-result-table`), then merges: fresh
+   rows are authoritative for the window, cached rows strictly before it are
+   kept. The UI renders `loadCachedTransactions()` instantly before syncing;
+   a failed sync with a cache on screen is silent staleness, not an error.
+   `clearScraperCache()` (called by `clearSession`) wipes cache + map on
+   sign-out. `Transaction` exposes `label` (type), `terminalLabel` (merchant),
+   `displayAmount`, `isDebit`, `parsedDate`, `amountValue`, `balanceId` (the
+   `Balance` column — the site's opaque account number, e.g. FLEXIBLE=5), and
+   `toJson`/`fromJson` for the cache.
 5. Account attribution: `POST /TransactionHistory/CurrentStatement` returns one
    card per account holding both its name and rows carrying its balance ID —
    the only place the two co-occur. `fetchBalanceIdMap` parses that into a

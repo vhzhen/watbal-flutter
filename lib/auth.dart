@@ -5,6 +5,8 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:watbal/scraper.dart';
+
 const String _dashboardUrl =
     "https://secure.touchnet.net/C22566_oneweb/Account/Dashboard";
 const String _appGroupId = 'group.com.vincent.watbal';
@@ -58,6 +60,9 @@ Future<void> clearSession() async {
     await HomeWidget.setAppGroupId(_appGroupId);
     await HomeWidget.saveWidgetData<String>(_prefsKey, null);
   } catch (_) {}
+  // Cached transactions / account map belong to this login; a different user
+  // signing in next must not inherit (or merge into) them.
+  await clearScraperCache();
   await CookieManager.instance().deleteAllCookies();
 }
 
