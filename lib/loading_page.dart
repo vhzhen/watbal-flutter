@@ -71,12 +71,9 @@ class _LoadingPageState extends State<LoadingPage> {
       _status = "Signing you in…";
     });
 
-    // A server-expired session leaves a stale `.ASPXAUTH` cookie in the WebView
-    // jar. Clear it before re-auth so the silent path forces a fresh SSO round
-    // trip and LoginWebView shows the real form, instead of either mistaking the
-    // dead cookie for a completed sign-in and committing it.
-    await clearAuthCookie();
-
+    // trySilentReauth starts by clearing the WebView's TouchNet cookies, so a
+    // server-expired session's stale `.ASPXAUTH` (which LoginWebView would
+    // mistake for a completed sign-in) is gone before either path runs.
     final silent = await trySilentReauth();
     if (!mounted) return;
     if (silent != null) {

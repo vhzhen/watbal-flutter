@@ -66,34 +66,52 @@ Future<String?> loadSession() async {
   return prefs.getString(_prefsKey);
 }
 
-/// Deletes only the session cookie (`.ASPXAUTH`) from the WebView jar, leaving
-/// the IdP / DUO "remember this device" cookies untouched.
+/// Deletes every cookie the WebView jar holds for the TouchNet host, leaving
+/// the IdP / DUO "remember this device" cookies (a different domain) untouched.
 ///
-/// When the server-side session expires, the `.ASPXAUTH` cookie is *not*
-/// removed from the browser — the server just stops honouring it. [LoginWebView]
-/// treats the cookie's mere presence as "already authenticated" and would commit
-/// that dead session without ever showing the login form, so the follow-up
-/// scrape fails with "couldn't load your balance". Clearing it forces a real
-/// re-auth, while [trySilentReauth] can still ride the persisted SSO cookies.
-Future<void> clearAuthCookie() async {
+/// Two dead-session problems this solves at once:
+///
+/// 1. **Stale `.ASPXAUTH`.** When the server-side session expires the cookie
+///    is *not* removed from the browser — the server just stops honouring it.
+///    [LoginWebView] treats the cookie's mere presence as "already
+///    authenticated" and would commit that dead session without ever showing
+///    the login form.
+/// 2. **Cookie build-up → permanent "400 Bad Request".** Each fresh TouchNet
+///    session sets a new `__RequestVerificationToken_<suffix>` cookie with a
+///    rotating suffix; the old ones are never overwritten or expired, they
+///    just accumulate in the persistent jar. The background refresh re-auths
+///    several times a day, so after a few weeks the Cookie header outgrows the
+///    server's request-header limit and every page — the login form included —
+///    comes back 400, surviving app restarts. Reinstalling was the only way
+///    out before this prune existed.
+///
+/// Safe because it only runs when the TouchNet session is already dead: the
+/// surviving SSO cookies re-mint every TouchNet cookie on the next pass
+/// through the flow, so sign-in stays silent.
+Future<void> _clearTouchnetCookies() async {
   final cm = CookieManager.instance();
   final url = WebUri(_dashboardUrl);
   try {
     for (final c in await cm.getCookies(url: url)) {
-      if (c.name == ".ASPXAUTH") {
-        final path = (c.path?.isNotEmpty ?? false) ? c.path! : "/";
-        await cm.deleteCookie(url: url, name: c.name, path: path);
+      final path = (c.path?.isNotEmpty ?? false) ? c.path! : "/";
+      await cm.deleteCookie(url: url, name: c.name, path: path);
+      // Backstop: getCookies can omit the path (notably on iOS), so also
+      // clear the conventional paths TouchNet scopes cookies to.
+      for (final p in const ["/", "/C22566_oneweb"]) {
+        if (p != path) {
+          await cm.deleteCookie(url: url, name: c.name, path: p);
+        }
       }
-    }
-    // Backstop: getCookies can omit the path (notably on iOS), so also clear
-    // the conventional paths the cookie may have been scoped to.
-    for (final path in const ["/", "/C22566_oneweb"]) {
-      await cm.deleteCookie(url: url, name: ".ASPXAUTH", path: path);
     }
   } catch (_) {
     // No cookie store / nothing to clear — re-auth will surface any real issue.
   }
 }
+
+/// HTTP statuses a server answers with when the request headers themselves are
+/// the problem — the signature of an overgrown cookie jar (see
+/// [_clearTouchnetCookies]). 494 is nginx's pre-431 own code for it.
+const Set<int> _headerOverflowStatuses = {400, 413, 431, 494};
 
 // ───────────────────────────── silent re-auth ──────────────────────────────
 
@@ -109,6 +127,11 @@ Future<void> clearAuthCookie() async {
 /// fast only when a page renders a password field (the unambiguous "SSO is
 /// dead, the user must sign in" signal). The 12s timeout is just a backstop.
 Future<String?> trySilentReauth() async {
+  // Start from a clean TouchNet jar. Callers only get here on a dead session
+  // ("Session Expired" / no saved session), so nothing of value is lost, and
+  // it keeps the jar from ever accumulating to the 400-Bad-Request point.
+  await _clearTouchnetCookies();
+
   final completer = Completer<String?>();
   HeadlessInAppWebView? headless;
 
@@ -169,6 +192,18 @@ Future<String?> trySilentReauth() async {
         debugPrint("[silentReauth] main-frame error: ${err.description}");
       }
     },
+    onReceivedHttpError: (_, req, res) {
+      // A header-overflow status after the TouchNet prune means the bloat is
+      // on the SSO domain — nothing the silent path can fix. Fail fast to the
+      // visible login (whose own recovery can wipe the whole jar) instead of
+      // burning the 12s timeout.
+      if ((req.isForMainFrame ?? false) &&
+          _headerOverflowStatuses.contains(res.statusCode) &&
+          !completer.isCompleted) {
+        debugPrint("[silentReauth] main-frame HTTP ${res.statusCode}; bailing");
+        completer.complete(null);
+      }
+    },
   );
 
   try {
@@ -210,6 +245,39 @@ class _LoginWebViewState extends State<LoginWebView> {
   bool _done = false;
   bool _cover = true;
   double _progress = 0;
+  int _recoveries = 0;
+
+  /// Last-resort self-heal for a login page that itself answers with a
+  /// header-overflow status (see [_headerOverflowStatuses]) — the state that
+  /// used to require reinstalling the app. Two escalating steps: drop the
+  /// TouchNet cookies (cheap — the SSO cookies survive, so sign-in stays
+  /// silent), then, if it still fails, wipe the whole jar (costs one full DUO
+  /// sign-in, the price of getting unstuck). Capped so a server that 400s for
+  /// unrelated reasons just shows its error page instead of looping.
+  Future<void> _recoverFromHeaderOverflow(
+    InAppWebViewController controller,
+    WebResourceRequest request,
+    WebResourceResponse response,
+  ) async {
+    if (_done ||
+        !(request.isForMainFrame ?? false) ||
+        !_headerOverflowStatuses.contains(response.statusCode) ||
+        _recoveries >= 2) {
+      return;
+    }
+    _recoveries++;
+    debugPrint(
+        "[login] HTTP ${response.statusCode}; recovery attempt $_recoveries");
+    if (_recoveries == 1) {
+      await _clearTouchnetCookies();
+    } else {
+      await CookieManager.instance().deleteAllCookies();
+    }
+    if (_done || !mounted) return;
+    await controller.loadUrl(
+      urlRequest: URLRequest(url: WebUri(_dashboardUrl)),
+    );
+  }
 
   Future<void> _evaluate(
     InAppWebViewController controller,
@@ -275,6 +343,7 @@ class _LoginWebViewState extends State<LoginWebView> {
             },
             onLoadStop: (c, url) => _evaluate(c, url),
             onUpdateVisitedHistory: (c, url, _) => _evaluate(c, url),
+            onReceivedHttpError: _recoverFromHeaderOverflow,
           ),
           if (_cover)
             Container(

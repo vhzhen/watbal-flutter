@@ -6,10 +6,25 @@ import 'package:watbal/log_viewer_page.dart';
 import 'package:watbal/main.dart';
 import 'package:watbal/scraper.dart';
 
-/// The single screen the user lives in — one vertical scroll, no tabs or paging:
-/// a balance hero, a light spending summary, an inline search bar, and the
-/// transaction history grouped by date, newest first. Pull-to-refresh refreshes
-/// balance and history together.
+/// SharedPreferences key holding the raw name of the account the user starred
+/// in the all-accounts menu. At most one account is starred; it sorts to the
+/// top of the menu and is the one the app auto-opens on launch. Absent = no
+/// star (the first account is the launch default).
+const String _starredAccountKey = 'starred_account';
+
+/// The app's root screen. What it shows depends on how many accounts exist:
+///
+/// - **One account** — no menu to speak of; renders that account's
+///   [_AccountDetailPage] (hero, spending summary, search, history) directly.
+/// - **Several** — the all-accounts menu: one tappable hero card per account,
+///   starred account first, star toggle in each card's top-right. On launch
+///   it immediately auto-opens the starred (or first) account's detail page,
+///   so the menu is what the back button reveals.
+///
+/// All data (balances, transactions, the account ↔ balance-ID map, the star)
+/// lives in a shared [_HomeController] so the menu and any open detail page
+/// stay in sync through a single fetch — transactions for every account come
+/// from one TransactionsPass call anyway.
 class HomePage extends StatefulWidget {
   final List<AccountBalance> accounts;
   final ThemeController theme;
@@ -29,19 +44,247 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final Scraper _scraper = Scraper();
-  List<Transaction>? _txns;
-  DateTime _updated = DateTime.now();
-  bool _refreshing = false;
-  String? _error;
-
-  String _query = '';
+  late final _HomeController _data;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _data = _HomeController(
+      accounts: widget.accounts,
+      onAccountsChanged: widget.onAccountsChanged,
+      onSignedOut: _signOut,
+    );
+    _data.load();
+    _autoOpenDefault();
   }
+
+  /// Launch behavior for multi-account users: land on the starred (or first)
+  /// account's detail page with the all-accounts menu underneath, so the app
+  /// opens on the numbers that matter and back reveals the menu. Zero-length
+  /// forward transition = the app appears to open directly on the detail.
+  Future<void> _autoOpenDefault() async {
+    await _data.loadStarred();
+    if (!mounted || widget.accounts.length <= 1) return;
+    final account = _data.defaultAccount;
+    if (account == null) return;
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        pageBuilder: (_, _, _) => _AccountDetailPage(
+          data: _data,
+          account: account,
+          theme: widget.theme,
+        ),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: const Duration(milliseconds: 200),
+        transitionsBuilder: (_, anim, _, child) =>
+            FadeTransition(opacity: anim, child: child),
+      ),
+    );
+  }
+
+  /// Detail pages are pushed *above* the app root's `home`, so swapping home
+  /// out for the LoadingPage on sign-out wouldn't remove them — pop back to
+  /// the overview first.
+  void _signOut() {
+    Navigator.of(context).popUntil((r) => r.isFirst);
+    widget.onSignedOut();
+  }
+
+  @override
+  void didUpdateWidget(HomePage old) {
+    super.didUpdateWidget(old);
+    // Sync the accounts main.dart hands back down. No notify: the only writer
+    // is _HomeController.refresh itself (via onAccountsChanged), which already
+    // notified with this same list — and this runs mid-build.
+    _data.syncAccounts(widget.accounts);
+  }
+
+  @override
+  void dispose() {
+    _data.dispose();
+    super.dispose();
+  }
+
+  void _openAccount(AccountBalance account) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _AccountDetailPage(
+          data: _data,
+          account: account,
+          theme: widget.theme,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListenableBuilder(
+      listenable: _data,
+      builder: (context, _) {
+        // A lone account needs no menu — its detail page *is* the app.
+        if (_data.accounts.length == 1) {
+          return _AccountDetailPage(
+            data: _data,
+            account: _data.accounts.first,
+            theme: widget.theme,
+          );
+        }
+        final accounts = _data.sortedAccounts;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text(
+              "WatBal",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.settings_outlined),
+                onPressed: () => _showSettings(context),
+              ),
+            ],
+          ),
+          body: RefreshIndicator(
+            onRefresh: _data.refresh,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 40),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      _UpdatedPill(
+                        refreshing: _data.refreshing,
+                        updated: _data.updated,
+                        onSurface: true,
+                      ),
+                    ],
+                  ),
+                ),
+                for (var i = 0; i < accounts.length; i++) ...[
+                  if (i > 0) const SizedBox(height: 12),
+                  _HeroCard(
+                    account: accounts[i],
+                    trailing: _StarButton(
+                      starred: _data.starred == accounts[i].name,
+                      onTap: () => _data.toggleStar(accounts[i].name),
+                    ),
+                    caption: _caption(accounts[i]),
+                    onTap: () => _openAccount(accounts[i]),
+                  ),
+                ],
+                if (_data.error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 24),
+                    child: Center(
+                      child: Text(
+                        _data.error!,
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// "12 transactions" under the balance — doubles as the tap affordance.
+  /// Blank until the first transactions fetch lands.
+  String? _caption(AccountBalance account) {
+    final txns = _data.txnsFor(account);
+    if (txns == null) return null;
+    return "${txns.length} transaction${txns.length == 1 ? '' : 's'}";
+  }
+
+  void _showSettings(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (_) => _SettingsDialog(
+        theme: widget.theme,
+        accounts: _data.accounts,
+        onSignedOut: () {
+          Navigator.of(context).pop();
+          _signOut();
+        },
+      ),
+    );
+  }
+}
+
+// ───────────────────────────── shared controller ───────────────────────────
+
+/// Owns everything both pages render: accounts, transactions, the account ↔
+/// balance-ID map, and refresh state. One instance per HomePage lifetime,
+/// passed into detail pages so a pull-to-refresh on either screen updates
+/// both.
+class _HomeController extends ChangeNotifier {
+  _HomeController({
+    required List<AccountBalance> accounts,
+    required this.onAccountsChanged,
+    required this.onSignedOut,
+  }) : _accounts = accounts;
+
+  final Scraper _scraper = Scraper();
+  final ValueChanged<List<AccountBalance>> onAccountsChanged;
+  final VoidCallback onSignedOut;
+
+  List<AccountBalance> _accounts;
+  List<AccountBalance> get accounts => _accounts;
+
+  /// See [_HomePageState.didUpdateWidget] — deliberately no notify.
+  void syncAccounts(List<AccountBalance> value) => _accounts = value;
+
+  /// Raw name of the starred account, or null. At most one.
+  String? _starred;
+  String? get starred => _starred;
+
+  Future<void> loadStarred() async {
+    final prefs = await SharedPreferences.getInstance();
+    _starred = prefs.getString(_starredAccountKey);
+    notifyListeners();
+  }
+
+  /// Stars [name] (unstarring whatever held the star), or unstars it when it
+  /// already holds the star.
+  Future<void> toggleStar(String name) async {
+    _starred = _starred == name ? null : name;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    if (_starred == null) {
+      await prefs.remove(_starredAccountKey);
+    } else {
+      await prefs.setString(_starredAccountKey, _starred!);
+    }
+  }
+
+  /// Accounts in menu order: the starred one first, the rest as scraped.
+  List<AccountBalance> get sortedAccounts {
+    final list = List.of(_accounts);
+    final i = list.indexWhere((a) => a.name == _starred);
+    if (i > 0) list.insert(0, list.removeAt(i));
+    return list;
+  }
+
+  /// The account the app opens on: starred if set (and still present),
+  /// otherwise the first. Null only when there are no accounts at all.
+  AccountBalance? get defaultAccount => _accounts.isEmpty
+      ? null
+      : _accounts.firstWhere(
+          (a) => a.name == _starred,
+          orElse: () => _accounts.first,
+        );
+
+  List<Transaction>? _txns;
+  Map<String, String> _balanceIds = const {};
+  DateTime updated = DateTime.now();
+  bool refreshing = false;
+  String? error;
 
   // 5-year window so we always have plenty of recent activity.
   DateTime get _from {
@@ -49,69 +292,123 @@ class _HomePageState extends State<HomePage> {
     return DateTime(now.year - 5, now.month, now.day);
   }
 
-  Future<void> _load() async {
+  Future<void> load() async {
     final cookies = await loadSession();
     if (cookies == null) {
-      widget.onSignedOut();
+      onSignedOut();
       return;
     }
     try {
-      final txns = await _scraper.fetchTransactions(
+      _txns = await _scraper.fetchTransactions(
         cookies,
         from: _from,
         to: DateTime.now(),
       );
-      if (mounted) setState(() => _txns = txns);
+      // fetchTransactions just ensured the map is current; this is a cache
+      // read, not another request.
+      _balanceIds = await _scraper.ensureBalanceIdMap(cookies);
+      notifyListeners();
     } catch (e) {
       if (e.toString().contains("Expired")) {
-        widget.onSignedOut();
-      } else if (mounted) {
-        setState(() => _error = "Couldn't load transactions.");
-      }
-    }
-  }
-
-  Future<void> _refresh() async {
-    setState(() => _refreshing = true);
-    final cookies = await loadSession();
-    if (cookies == null) {
-      widget.onSignedOut();
-      return;
-    }
-    try {
-      final accounts = await _scraper.fetchBalances(cookies);
-      final txns = await _scraper.fetchTransactions(
-        cookies,
-        from: _from,
-        to: DateTime.now(),
-      );
-      if (!mounted) return;
-      setState(() {
-        _txns = txns;
-        _updated = DateTime.now();
-        _error = null;
-        _refreshing = false;
-      });
-      widget.onAccountsChanged(accounts);
-    } catch (e) {
-      if (!mounted) return;
-      if (e.toString().contains("Expired")) {
-        widget.onSignedOut();
+        onSignedOut();
       } else {
-        setState(() {
-          _error = "Couldn't refresh.";
-          _refreshing = false;
-        });
+        error = "Couldn't load transactions.";
+        notifyListeners();
       }
     }
   }
 
-  // ──────────────────────────── derived data ─────────────────────────────
+  Future<void> refresh() async {
+    refreshing = true;
+    notifyListeners();
+    final cookies = await loadSession();
+    if (cookies == null) {
+      onSignedOut();
+      return;
+    }
+    try {
+      final fresh = await _scraper.fetchBalances(cookies);
+      _txns = await _scraper.fetchTransactions(
+        cookies,
+        from: _from,
+        to: DateTime.now(),
+      );
+      _balanceIds = await _scraper.ensureBalanceIdMap(cookies);
+      _accounts = fresh;
+      updated = DateTime.now();
+      error = null;
+      refreshing = false;
+      notifyListeners();
+      onAccountsChanged(fresh);
+    } catch (e) {
+      if (e.toString().contains("Expired")) {
+        onSignedOut();
+      } else {
+        error = "Couldn't refresh.";
+        refreshing = false;
+        notifyListeners();
+      }
+    }
+  }
 
-  /// Transactions after the search query, newest first.
-  List<Transaction> get _filtered {
+  /// The freshest balance row for [account] (a refresh replaces the list, so
+  /// a detail page can't hold onto its constructor copy), falling back to the
+  /// stale copy if the account vanished from the latest scrape.
+  AccountBalance current(AccountBalance account) => _accounts.firstWhere(
+        (a) => a.name == account.name,
+        orElse: () => account,
+      );
+
+  /// Transactions attributed to [account]. Null while the first fetch is in
+  /// flight (loading), empty when loaded-but-none.
+  ///
+  /// Attribution: a transaction row's `Balance` column carries the account's
+  /// opaque balance ID, resolved through the CurrentStatement-derived map.
+  /// When this account's own ID is unknown (no activity in the current
+  /// statement period yet), show everything *not claimed* by another
+  /// account's known ID rather than nothing — never silently lose rows.
+  List<Transaction>? txnsFor(AccountBalance account) {
+    final all = _txns;
+    if (all == null) return null;
+    final id = _balanceIds[account.name];
+    if (id != null) {
+      return all.where((t) => t.balanceId == id).toList();
+    }
+    final claimed = <String>{
+      for (final a in _accounts)
+        if (a.name != account.name && _balanceIds[a.name] != null)
+          _balanceIds[a.name]!,
+    };
+    return all.where((t) => !claimed.contains(t.balanceId)).toList();
+  }
+}
+
+// ───────────────────────────── account detail ──────────────────────────────
+
+/// One account's screen: hero, spending summary, search, and the transaction
+/// history — every number on it derived only from this account's transactions.
+class _AccountDetailPage extends StatefulWidget {
+  final _HomeController data;
+  final AccountBalance account;
+  final ThemeController theme;
+
+  const _AccountDetailPage({
+    required this.data,
+    required this.account,
+    required this.theme,
+  });
+
+  @override
+  State<_AccountDetailPage> createState() => _AccountDetailPageState();
+}
+
+class _AccountDetailPageState extends State<_AccountDetailPage> {
+  String _query = '';
+
+  /// This account's transactions after the search query, newest first.
+  List<Transaction> _filtered(List<Transaction> txns) {
     final q = _query.trim().toLowerCase();
-    final list = (_txns ?? []).where((t) {
+    final list = txns.where((t) {
       if (q.isNotEmpty) {
         final hay =
             '${t.label} ${t.terminalLabel} ${t.displayAmount} ${t.dateTime}'
@@ -132,10 +429,10 @@ class _HomePageState extends State<HomePage> {
 
   /// Flattened rows for the lazy list: a `String` is a date header, a
   /// `Transaction` is a row.
-  List<Object> get _rows {
+  List<Object> _rows(List<Transaction> filtered) {
     final rows = <Object>[];
     String? current;
-    for (final t in _filtered) {
+    for (final t in filtered) {
       final label = _dayLabel(t.parsedDate);
       if (label != current) {
         rows.add(label);
@@ -146,10 +443,10 @@ class _HomePageState extends State<HomePage> {
     return rows;
   }
 
-  /// Total spent (debits only) since [start].
-  double _spentSince(DateTime start) {
+  /// Total spent (debits only) since [start], within this account.
+  double _spentSince(List<Transaction> txns, DateTime start) {
     var sum = 0.0;
-    for (final t in (_txns ?? [])) {
+    for (final t in txns) {
       if (!t.isDebit) continue;
       final d = t.parsedDate;
       if (d == null || d.isBefore(start)) continue;
@@ -158,141 +455,73 @@ class _HomePageState extends State<HomePage> {
     return sum;
   }
 
-  // ──────────────────────────────── build ────────────────────────────────
-
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          "WatBal",
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: () => _showSettings(context),
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            SliverToBoxAdapter(child: _heroes(scheme)),
-            SliverToBoxAdapter(child: _summary(scheme)),
-            SliverToBoxAdapter(child: _searchFilter(scheme)),
-            ..._content(scheme),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// One hero card per account, stacked. With a single account this is the
-  /// familiar full-size hero; with several, each gets its own card and only the
-  /// first carries the "Updated …" pill (it applies to all of them).
-  Widget _heroes(ColorScheme scheme) {
-    final accounts = widget.accounts;
-    return Column(
-      children: [
-        for (var i = 0; i < accounts.length; i++)
-          Padding(
-            padding: EdgeInsets.fromLTRB(16, i == 0 ? 8 : 12, 16, 0),
-            child: _heroCard(scheme, accounts[i], showUpdated: i == 0),
-          ),
-      ],
-    );
-  }
-
-  Widget _heroCard(
-    ColorScheme scheme,
-    AccountBalance account, {
-    required bool showUpdated,
-  }) {
-    final onContainer = scheme.onPrimaryContainer;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
-      decoration: BoxDecoration(
-        color: scheme.primaryContainer,
-        borderRadius: BorderRadius.circular(28),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  account.displayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: onContainer.withValues(alpha: 0.7),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 1.4,
+    return ListenableBuilder(
+      listenable: widget.data,
+      builder: (context, _) {
+        final account = widget.data.current(widget.account);
+        final txns = widget.data.txnsFor(account);
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(
+              account.displayName,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            // Settings must be reachable here: with one account (or after the
+            // launch auto-open) this page is what the user lands on.
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.settings_outlined),
+                onPressed: () => showDialog(
+                  context: context,
+                  builder: (dialogContext) => _SettingsDialog(
+                    theme: widget.theme,
+                    accounts: widget.data.accounts,
+                    onSignedOut: () {
+                      Navigator.of(dialogContext).pop();
+                      widget.data.onSignedOut();
+                    },
                   ),
                 ),
               ),
-              if (showUpdated) _updatedPill(scheme),
             ],
           ),
-          const SizedBox(height: 12),
-          Text(
-            account.amount,
-            style: TextStyle(
-              fontSize: 52,
-              fontWeight: FontWeight.w800,
-              color: onContainer,
-              letterSpacing: -1.5,
+          body: RefreshIndicator(
+            onRefresh: widget.data.refresh,
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                    child: _HeroCard(
+                      account: account,
+                      trailing: _UpdatedPill(
+                        refreshing: widget.data.refreshing,
+                        updated: widget.data.updated,
+                      ),
+                    ),
+                  ),
+                ),
+                SliverToBoxAdapter(child: _summary(txns)),
+                SliverToBoxAdapter(child: _searchFilter(scheme)),
+                ..._content(scheme, txns),
+              ],
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _updatedPill(ColorScheme scheme) {
-    final onContainer = scheme.onPrimaryContainer;
-    final fg = onContainer.withValues(alpha: 0.8);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: onContainer.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_refreshing) ...[
-            SizedBox(
-              width: 11,
-              height: 11,
-              child: CircularProgressIndicator(strokeWidth: 2, color: fg),
-            ),
-            const SizedBox(width: 6),
-            Text("Refreshing…",
-                style: TextStyle(fontSize: 11, color: fg)),
-          ] else ...[
-            Icon(Icons.schedule, size: 12, color: fg),
-            const SizedBox(width: 5),
-            Text("Updated ${_relative(_updated)}",
-                style: TextStyle(fontSize: 11, color: fg)),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _summary(ColorScheme scheme) {
+  Widget _summary(List<Transaction>? txns) {
     final now = DateTime.now();
     final weekStart = DateTime(now.year, now.month, now.day)
         .subtract(Duration(days: now.weekday - 1));
     final monthStart = DateTime(now.year, now.month, 1);
+    final loaded = txns ?? const <Transaction>[];
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Row(
@@ -300,21 +529,21 @@ class _HomePageState extends State<HomePage> {
           Expanded(
             child: _StatTile(
               label: "This week",
-              value: _money(_spentSince(weekStart)),
+              value: _money(_spentSince(loaded, weekStart)),
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: _StatTile(
               label: "This month",
-              value: _money(_spentSince(monthStart)),
+              value: _money(_spentSince(loaded, monthStart)),
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: _StatTile(
               label: "Transactions",
-              value: "${(_txns ?? const []).length}",
+              value: txns == null ? "…" : "${txns.length}",
             ),
           ),
         ],
@@ -344,9 +573,10 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  List<Widget> _content(ColorScheme scheme) {
-    if (_error != null) return [_message(scheme, _error!)];
-    if (_txns == null) {
+  List<Widget> _content(ColorScheme scheme, List<Transaction>? txns) {
+    final error = widget.data.error;
+    if (error != null) return [_message(scheme, error)];
+    if (txns == null) {
       return [
         const SliverToBoxAdapter(
           child: Padding(
@@ -356,7 +586,7 @@ class _HomePageState extends State<HomePage> {
         ),
       ];
     }
-    final rows = _rows;
+    final rows = _rows(_filtered(txns));
     if (rows.isEmpty) {
       return [
         _message(
@@ -396,52 +626,218 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       );
+}
 
-  // ───────────────────────────── formatting ──────────────────────────────
+// ─────────────────────────────── hero card ─────────────────────────────────
 
-  String _money(double v) => "\$${v.toStringAsFixed(2)}";
+/// The balance hero. In the all-accounts menu it's tappable (chevron +
+/// transaction count as the affordance) with the star toggle as [trailing];
+/// on the detail page it's static and [trailing] is the "Updated …" pill.
+class _HeroCard extends StatelessWidget {
+  final AccountBalance account;
+  final Widget? trailing;
+  final String? caption;
+  final VoidCallback? onTap;
 
-  /// "Today" / "Yesterday" / "Mon, Jun 14" (with year if not the current one).
-  String _dayLabel(DateTime? d) {
-    if (d == null) return "Other";
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final day = DateTime(d.year, d.month, d.day);
-    final diff = today.difference(day).inDays;
-    if (diff == 0) return "Today";
-    if (diff == 1) return "Yesterday";
-    const wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const mo = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    final base = "${wd[day.weekday - 1]}, ${mo[day.month - 1]} ${day.day}";
-    return day.year == today.year ? base : "$base, ${day.year}";
-  }
+  const _HeroCard({
+    required this.account,
+    this.trailing,
+    this.caption,
+    this.onTap,
+  });
 
-  /// "just now", "5m ago", "2h ago" — keeps the hero from feeling stale.
-  String _relative(DateTime t) {
-    final diff = DateTime.now().difference(t);
-    if (diff.inSeconds < 30) return "just now";
-    if (diff.inMinutes < 1) return "${diff.inSeconds}s ago";
-    if (diff.inHours < 1) return "${diff.inMinutes}m ago";
-    if (diff.inDays < 1) return "${diff.inHours}h ago";
-    return "${diff.inDays}d ago";
-  }
-
-  void _showSettings(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => _SettingsDialog(
-        theme: widget.theme,
-        accounts: widget.accounts,
-        onSignedOut: () {
-          Navigator.of(context).pop();
-          widget.onSignedOut();
-        },
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final onContainer = scheme.onPrimaryContainer;
+    return Material(
+      color: scheme.primaryContainer,
+      borderRadius: BorderRadius.circular(28),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(28),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      account.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: onContainer.withValues(alpha: 0.7),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1.4,
+                      ),
+                    ),
+                  ),
+                  ?trailing,
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Text(
+                      account.amount,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 52,
+                        fontWeight: FontWeight.w800,
+                        color: onContainer,
+                        letterSpacing: -1.5,
+                      ),
+                    ),
+                  ),
+                  if (onTap != null) ...[
+                    const SizedBox(width: 12),
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: onContainer.withValues(alpha: 0.10),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.chevron_right,
+                        color: onContainer.withValues(alpha: 0.8),
+                        size: 22,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              if (caption != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  caption!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: onContainer.withValues(alpha: 0.7),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
+}
+
+/// The star toggle in a menu hero's top-right. Filled = this account leads
+/// the menu and is the launch default.
+class _StarButton extends StatelessWidget {
+  final bool starred;
+  final VoidCallback onTap;
+
+  const _StarButton({required this.starred, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final onContainer = Theme.of(context).colorScheme.onPrimaryContainer;
+    return InkResponse(
+      onTap: onTap,
+      radius: 22,
+      child: Padding(
+        padding: const EdgeInsets.all(2),
+        child: Icon(
+          starred ? Icons.star_rounded : Icons.star_outline_rounded,
+          size: 24,
+          color: starred ? onContainer : onContainer.withValues(alpha: 0.55),
+        ),
+      ),
+    );
+  }
+}
+
+class _UpdatedPill extends StatelessWidget {
+  final bool refreshing;
+  final DateTime updated;
+
+  /// True when the pill sits on the page background (the all-accounts menu)
+  /// rather than on a hero card, which needs surface-toned colors.
+  final bool onSurface;
+
+  const _UpdatedPill({
+    required this.refreshing,
+    required this.updated,
+    this.onSurface = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final base = onSurface ? scheme.onSurfaceVariant : scheme.onPrimaryContainer;
+    final fg = base.withValues(alpha: onSurface ? 1.0 : 0.8);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: onSurface
+            ? scheme.surfaceContainerHighest
+            : base.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (refreshing) ...[
+            SizedBox(
+              width: 11,
+              height: 11,
+              child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+            ),
+            const SizedBox(width: 6),
+            Text("Refreshing…", style: TextStyle(fontSize: 11, color: fg)),
+          ] else ...[
+            Icon(Icons.schedule, size: 12, color: fg),
+            const SizedBox(width: 5),
+            Text("Updated ${_relative(updated)}",
+                style: TextStyle(fontSize: 11, color: fg)),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ───────────────────────────── formatting ──────────────────────────────────
+
+String _money(double v) => "\$${v.toStringAsFixed(2)}";
+
+/// "Today" / "Yesterday" / "Mon, Jun 14" (with year if not the current one).
+String _dayLabel(DateTime? d) {
+  if (d == null) return "Other";
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(d.year, d.month, d.day);
+  final diff = today.difference(day).inDays;
+  if (diff == 0) return "Today";
+  if (diff == 1) return "Yesterday";
+  const wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const mo = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  final base = "${wd[day.weekday - 1]}, ${mo[day.month - 1]} ${day.day}";
+  return day.year == today.year ? base : "$base, ${day.year}";
+}
+
+/// "just now", "5m ago", "2h ago" — keeps the hero from feeling stale.
+String _relative(DateTime t) {
+  final diff = DateTime.now().difference(t);
+  if (diff.inSeconds < 30) return "just now";
+  if (diff.inMinutes < 1) return "${diff.inSeconds}s ago";
+  if (diff.inHours < 1) return "${diff.inMinutes}m ago";
+  if (diff.inDays < 1) return "${diff.inHours}h ago";
+  return "${diff.inDays}d ago";
 }
 
 // ───────────────────────────── summary stat tile ───────────────────────────

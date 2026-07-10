@@ -12,8 +12,14 @@ but is lower priority.
    success by the `.ASPXAUTH` cookie and saves the full cookie header.
 2. Later runs: scrapes headlessly with the saved cookies — all account balances
    and recent transactions.
-3. Shows it on a single scrollable home screen (balance hero, spending summary,
-   search, transactions grouped by date) and pushes it to home-screen widgets.
+3. UI depends on account count. One account: the app *is* that account's
+   detail page (hero, spending summary, search, transactions grouped by date —
+   all computed from that account's transactions only, via the balance-ID
+   map). Several: an all-accounts menu (tappable hero cards, star toggle in
+   each card's top-right; the starred account — pref `starred_account`, max
+   one — sorts first), and on launch the app auto-opens the starred (or first)
+   account's detail page with the menu one back-press below. Also pushes to
+   home-screen widgets.
 4. Refreshes in the background so the widgets stay current without opening the
    app — re-authenticating silently when the session expires.
 
@@ -26,10 +32,15 @@ lib/
   main.dart            # Entry point, app root, themes (AppTheme), lifecycle,
                        # WorkManager background callback (the re-auth lives here)
   auth.dart            # Cookie persistence, silent re-auth (trySilentReauth),
-                       # the visible LoginWebView, clearSession/clearAuthCookie
+                       # the visible LoginWebView, clearSession, TouchNet
+                       # cookie-jar pruning (_clearTouchnetCookies)
   scraper.dart         # All HTTP scraping (balance + transactions), the
                        # Transaction model, and reloadWatBalWidgets()
-  home_page.dart       # The main UI (single scroll), settings dialog
+  home_page.dart       # HomePage (all-accounts menu, or the lone account's
+                       # detail directly) + per-account detail page, launch
+                       # auto-open of the starred account, shared
+                       # _HomeController (txns + balance-ID map + star),
+                       # settings dialog
   loading_page.dart    # Cold-start: try saved cookies -> silent re-auth -> login
   debug_log.dart       # File logger (works from the background isolate)
   log_viewer_page.dart # In-app log viewer (Settings -> View logs)
@@ -48,8 +59,17 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
   and the long-lived university SSO/DUO "remember this device" cookies, which
   live only in the WebView cookie jar. The SSO cookies let `trySilentReauth()`
   (a headless WebView replaying the SSO flow) get a fresh `.ASPXAUTH` with no
-  password. Stale `.ASPXAUTH` after expiry is cleared via `clearAuthCookie()` so
-  `LoginWebView` doesn't mistake its presence for a completed login.
+  password.
+- **Cookie-jar hygiene:** each fresh TouchNet session sets a new
+  `__RequestVerificationToken_<suffix>` cookie (rotating suffix) that never
+  expires or overwrites — left alone they accumulate until the Cookie header
+  exceeds the server's limit and everything (login page included) 400s, which
+  only a reinstall used to fix. `trySilentReauth()` therefore starts by wiping
+  all TouchNet-host cookies (`_clearTouchnetCookies` — SSO/DUO cookies are on
+  the IdP domain and survive); this also removes the stale `.ASPXAUTH` that
+  `LoginWebView` would mistake for a completed login. As a backstop,
+  `LoginWebView` self-heals on a main-frame 400/413/431/494: first prune
+  TouchNet cookies, then wipe the whole jar (one full DUO sign-in).
 
 ## Scraping flow (order matters — see scraper.dart)
 
@@ -64,7 +84,19 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
 4. Transactions: `POST /TransactionHistory/TransactionsPass` (5-year window, 1000
    rows) → rows from `#transaction-history-result-table`. `Transaction` exposes
    `label` (type), `terminalLabel` (merchant), `displayAmount`, `isDebit`,
-   `parsedDate`, `amountValue`.
+   `parsedDate`, `amountValue`, `balanceId` (the `Balance` column — the site's
+   opaque account number, e.g. FLEXIBLE=5).
+5. Account attribution: `POST /TransactionHistory/CurrentStatement` returns one
+   card per account holding both its name and rows carrying its balance ID —
+   the only place the two co-occur. `fetchBalanceIdMap` parses that into a
+   name→ID map, persisted as JSON in pref `account_balance_ids` (and an
+   isolate-static cache). `ensureBalanceIdMap` (called from `fetchTransactions`)
+   re-fetches only when the map is empty or a scraped row carries an unknown ID
+   (new account type); IDs still unknown after a re-fetch (account inactive this
+   statement period) are remembered so they can't re-trigger fetches every
+   refresh. Map stores are written to the debug log (`map:` prefix). Raw names
+   → UI names via top-level `accountDisplayName()` ("FLEXIBLE" → "FLEX
+   DOLLARS").
 
 ## Background refresh
 

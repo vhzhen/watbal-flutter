@@ -13,6 +13,25 @@ import 'package:watbal/debug_log.dart';
 /// first account". Read by the scraper when deciding which balance to push.
 const String kWidgetAccountKey = 'widget_account';
 
+/// SharedPreferences key holding the account-name → balance-ID map as JSON,
+/// e.g. `{"FLEXIBLE":"5","TRANSFER MP":"7"}`. The ID is the opaque number the
+/// site renders in the `Balance` column of every transaction row, which is
+/// what lets transactions be split per account. Discovered by
+/// [Scraper.fetchBalanceIdMap]; read via [Scraper.ensureBalanceIdMap].
+const String kBalanceIdMapKey = 'account_balance_ids';
+
+/// User-facing name for a raw scraped account name. The site's internal
+/// "FLEXIBLE" reads as "FLEX DOLLARS"; any other account is title-cased.
+String accountDisplayName(String name) {
+  if (name.toUpperCase() == 'FLEXIBLE') return 'FLEX DOLLARS';
+  return name
+      .split(RegExp(r'\s+'))
+      .map((w) => w.isEmpty
+          ? w
+          : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}')
+      .join(' ');
+}
+
 /// Broadcasts a reload to every WatBal home-screen widget. The full widget
 /// (balance + transactions) and the compact 1x1 widget read the same shared
 /// data, so a single data write feeds both — they just need separate update
@@ -47,17 +66,8 @@ class AccountBalance {
 
   const AccountBalance({required this.name, required this.amount});
 
-  /// User-facing name. The site's internal "FLEXIBLE" reads as "FLEX DOLLARS";
-  /// any other account is title-cased from its raw name.
-  String get displayName {
-    if (name.toUpperCase() == 'FLEXIBLE') return 'FLEX DOLLARS';
-    return name
-        .split(RegExp(r'\s+'))
-        .map((w) => w.isEmpty
-            ? w
-            : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}')
-        .join(' ');
-  }
+  /// User-facing name — see [accountDisplayName].
+  String get displayName => accountDisplayName(name);
 }
 
 /// One row from the TouchNet transaction-history table.
@@ -67,11 +77,18 @@ class Transaction {
   final String terminal;
   final String amount;
 
+  /// The site's opaque account number from the row's `Balance` column (e.g.
+  /// "5"). Matches an entry in the [kBalanceIdMapKey] map, which resolves it
+  /// to an account name — how transactions are attributed to an account.
+  /// Empty when the column is missing.
+  final String balanceId;
+
   const Transaction({
     required this.dateTime,
     required this.type,
     required this.terminal,
     required this.amount,
+    this.balanceId = '',
   });
 
   /// True when money left the account (amount is negative, e.g. "$-10.00").
@@ -261,7 +278,7 @@ class Scraper {
       },
     );
 
-    return parse(res.body)
+    final txns = parse(res.body)
         .querySelectorAll('#transaction-history-result-table tbody tr')
         .map((r) {
       String cell(String title) =>
@@ -271,8 +288,140 @@ class Scraper {
         type: cell("Type"),
         terminal: cell("Terminal"),
         amount: cell("Amount"),
+        balanceId: cell("Balance"),
       );
     }).toList();
+
+    // Keep the account ↔ balance-ID map in step with what the rows actually
+    // reference — a no-op (no network) once every seen ID is known. Mapping
+    // problems must never take down the transaction list itself.
+    try {
+      await ensureBalanceIdMap(
+        cookies,
+        seenBalanceIds: txns.map((t) => t.balanceId),
+        token: token,
+      );
+    } catch (e) {
+      await DebugLog.log("map: ensure failed: $e");
+    }
+
+    return txns;
+  }
+
+  // ─────────────────── account ↔ balance-ID mapping ───────────────────
+
+  /// Isolate-local copy of the stored map so repeated fetches don't re-read
+  /// prefs, plus the IDs that survived a re-fetch still unmapped (an account
+  /// with no activity in the current statement can't be mapped yet) so one
+  /// stubborn ID can't trigger a CurrentStatement request on every refresh.
+  static Map<String, String>? _balanceIdCache;
+  static final Set<String> _unmappableIds = {};
+
+  /// Returns the account-name → balance-ID map, fetching it from the site
+  /// only when needed: when nothing is stored yet, or when [seenBalanceIds]
+  /// (from freshly scraped transaction rows) contains an ID the stored map
+  /// doesn't know — the signal that a new account type appeared.
+  Future<Map<String, String>> ensureBalanceIdMap(
+    String cookies, {
+    Iterable<String> seenBalanceIds = const [],
+    String? token,
+  }) async {
+    var map = _balanceIdCache;
+    if (map == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString(kBalanceIdMapKey);
+      map = stored == null
+          ? <String, String>{}
+          : Map<String, String>.from(jsonDecode(stored) as Map);
+      _balanceIdCache = map;
+    }
+
+    final unknown = seenBalanceIds
+        .where((id) =>
+            id.isNotEmpty &&
+            !map!.containsValue(id) &&
+            !_unmappableIds.contains(id))
+        .toSet();
+    if (map.isNotEmpty && unknown.isEmpty) return map;
+
+    map = await fetchBalanceIdMap(cookies, token: token);
+    for (final id in unknown.where((id) => !map!.containsValue(id))) {
+      _unmappableIds.add(id);
+      await DebugLog.log(
+          "map: balance ID $id not in current statement; deferring");
+    }
+    return map;
+  }
+
+  /// Scrapes `/TransactionHistory/CurrentStatement`, whose response is one
+  /// card per account carrying both the account's name and transaction rows
+  /// with that account's balance ID — the only place the two appear together.
+  /// Stores the resulting map (prefs + cache) and logs it.
+  Future<Map<String, String>> fetchBalanceIdMap(
+    String cookies, {
+    String? token,
+  }) async {
+    token ??= await _token(cookies);
+
+    final res = await http.post(
+      Uri.parse("$_base/TransactionHistory/CurrentStatement"),
+      headers: {
+        ..._ajaxHeaders(cookies),
+        "Origin": "https://secure.touchnet.net",
+        "Referer": "$_base/TransactionHistory/Transactions",
+      },
+      body: {"__RequestVerificationToken": token},
+    );
+
+    final map = _parseBalanceIdMap(res.body);
+    if (map.isEmpty) {
+      await DebugLog.log("map: CurrentStatement yielded no account mappings");
+      return _balanceIdCache ?? {};
+    }
+
+    // Merge over what's known rather than replace: an account with no
+    // activity this statement period drops out of the response, but its ID
+    // hasn't changed.
+    final merged = {...?_balanceIdCache, ...map};
+    _balanceIdCache = merged;
+    _unmappableIds.clear();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kBalanceIdMapKey, jsonEncode(merged));
+    await DebugLog.log(
+        "map: stored account balance IDs: ${merged.entries.map((e) => '${e.key}=${e.value}').join(', ')}");
+    return merged;
+  }
+
+  /// Resolves a transaction row's balance ID to its raw account name (e.g.
+  /// "5" → "FLEXIBLE"), or null when unmapped. Feed the result through
+  /// [accountDisplayName] for the UI.
+  static String? accountNameForBalanceId(
+          Map<String, String> map, String balanceId) =>
+      map.entries
+          .where((e) => e.value == balanceId)
+          .map((e) => e.key)
+          .firstOrNull;
+
+  /// One card of the CurrentStatement response: the account name sits in a
+  /// `<p><span class="statement-info">Name</span>FLEXIBLE</p>` line, and every
+  /// row of the card's table carries that account's balance ID in its
+  /// `Balance` column. A card whose table has no rows can't be mapped.
+  Map<String, String> _parseBalanceIdMap(String html) {
+    final out = <String, String>{};
+    for (final card in parse(html).querySelectorAll('.oc-card')) {
+      String? name;
+      for (final p in card.querySelectorAll('p')) {
+        final label = p.querySelector('span.statement-info');
+        if (label?.text.trim() == 'Name') {
+          name = p.text.replaceFirst(label!.text, '').trim();
+          break;
+        }
+      }
+      final id = card.querySelector('td[data-title="Balance"]')?.text.trim();
+      if (name == null || name.isEmpty || id == null || id.isEmpty) continue;
+      out[name] = id;
+    }
+    return out;
   }
 
   /// Refreshes the iOS transactions widget with the 8 most-recent rows. Uses
