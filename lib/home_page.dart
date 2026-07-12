@@ -6,25 +6,15 @@ import 'package:watbal/log_viewer_page.dart';
 import 'package:watbal/main.dart';
 import 'package:watbal/scraper.dart';
 
-/// SharedPreferences key holding the raw name of the account the user starred
-/// in the all-accounts menu. At most one account is starred; it sorts to the
-/// top of the menu and is the one the app auto-opens on launch. Absent = no
-/// star (the first account is the launch default).
-const String _starredAccountKey = 'starred_account';
-
-/// The app's root screen. What it shows depends on how many accounts exist:
+/// The app's root screen: the all-accounts menu — one tappable hero card per
+/// account, in scraped order, regardless of how many accounts exist. Tapping
+/// a card opens that account's [_AccountDetailPage] (hero, spending summary,
+/// search, history).
 ///
-/// - **One account** — no menu to speak of; renders that account's
-///   [_AccountDetailPage] (hero, spending summary, search, history) directly.
-/// - **Several** — the all-accounts menu: one tappable hero card per account,
-///   starred account first, star toggle in each card's top-right. On launch
-///   it immediately auto-opens the starred (or first) account's detail page,
-///   so the menu is what the back button reveals.
-///
-/// All data (balances, transactions, the account ↔ balance-ID map, the star)
-/// lives in a shared [_HomeController] so the menu and any open detail page
-/// stay in sync through a single fetch — transactions for every account come
-/// from one TransactionsPass call anyway.
+/// All data (balances, transactions, the account ↔ balance-ID map) lives in a
+/// shared [_HomeController] so the menu and any open detail page stay in sync
+/// through a single fetch — transactions for every account come from one
+/// TransactionsPass call anyway.
 class HomePage extends StatefulWidget {
   final List<AccountBalance> accounts;
   final ThemeController theme;
@@ -55,31 +45,6 @@ class _HomePageState extends State<HomePage> {
       onSignedOut: _signOut,
     );
     _data.load();
-    _autoOpenDefault();
-  }
-
-  /// Launch behavior for multi-account users: land on the starred (or first)
-  /// account's detail page with the all-accounts menu underneath, so the app
-  /// opens on the numbers that matter and back reveals the menu. Zero-length
-  /// forward transition = the app appears to open directly on the detail.
-  Future<void> _autoOpenDefault() async {
-    await _data.loadStarred();
-    if (!mounted || widget.accounts.length <= 1) return;
-    final account = _data.defaultAccount;
-    if (account == null) return;
-    Navigator.of(context).push(
-      PageRouteBuilder(
-        pageBuilder: (_, _, _) => _AccountDetailPage(
-          data: _data,
-          account: account,
-          theme: widget.theme,
-        ),
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: const Duration(milliseconds: 200),
-        transitionsBuilder: (_, anim, _, child) =>
-            FadeTransition(opacity: anim, child: child),
-      ),
-    );
   }
 
   /// Detail pages are pushed *above* the app root's `home`, so swapping home
@@ -123,15 +88,7 @@ class _HomePageState extends State<HomePage> {
     return ListenableBuilder(
       listenable: _data,
       builder: (context, _) {
-        // A lone account needs no menu — its detail page *is* the app.
-        if (_data.accounts.length == 1) {
-          return _AccountDetailPage(
-            data: _data,
-            account: _data.accounts.first,
-            theme: widget.theme,
-          );
-        }
-        final accounts = _data.sortedAccounts;
+        final accounts = _data.accounts;
         return Scaffold(
           appBar: AppBar(
             title: const Text(
@@ -168,10 +125,6 @@ class _HomePageState extends State<HomePage> {
                   if (i > 0) const SizedBox(height: 12),
                   _HeroCard(
                     account: accounts[i],
-                    trailing: _StarButton(
-                      starred: _data.starred == accounts[i].name,
-                      onTap: () => _data.toggleStar(accounts[i].name),
-                    ),
                     caption: _caption(accounts[i]),
                     onTap: () => _openAccount(accounts[i]),
                   ),
@@ -239,46 +192,6 @@ class _HomeController extends ChangeNotifier {
 
   /// See [_HomePageState.didUpdateWidget] — deliberately no notify.
   void syncAccounts(List<AccountBalance> value) => _accounts = value;
-
-  /// Raw name of the starred account, or null. At most one.
-  String? _starred;
-  String? get starred => _starred;
-
-  Future<void> loadStarred() async {
-    final prefs = await SharedPreferences.getInstance();
-    _starred = prefs.getString(_starredAccountKey);
-    notifyListeners();
-  }
-
-  /// Stars [name] (unstarring whatever held the star), or unstars it when it
-  /// already holds the star.
-  Future<void> toggleStar(String name) async {
-    _starred = _starred == name ? null : name;
-    notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    if (_starred == null) {
-      await prefs.remove(_starredAccountKey);
-    } else {
-      await prefs.setString(_starredAccountKey, _starred!);
-    }
-  }
-
-  /// Accounts in menu order: the starred one first, the rest as scraped.
-  List<AccountBalance> get sortedAccounts {
-    final list = List.of(_accounts);
-    final i = list.indexWhere((a) => a.name == _starred);
-    if (i > 0) list.insert(0, list.removeAt(i));
-    return list;
-  }
-
-  /// The account the app opens on: starred if set (and still present),
-  /// otherwise the first. Null only when there are no accounts at all.
-  AccountBalance? get defaultAccount => _accounts.isEmpty
-      ? null
-      : _accounts.firstWhere(
-          (a) => a.name == _starred,
-          orElse: () => _accounts.first,
-        );
 
   List<Transaction>? _txns;
   Map<String, String> _balanceIds = const {};
@@ -466,8 +379,6 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
               account.displayName,
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
-            // Settings must be reachable here: with one account (or after the
-            // launch auto-open) this page is what the user lands on.
             actions: [
               IconButton(
                 icon: const Icon(Icons.settings_outlined),
@@ -628,8 +539,8 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
 // ─────────────────────────────── hero card ─────────────────────────────────
 
 /// The balance hero. In the all-accounts menu it's tappable (chevron +
-/// transaction count as the affordance) with the star toggle as [trailing];
-/// on the detail page it's static and [trailing] is the "Updated …" pill.
+/// transaction count as the affordance); on the detail page it's static and
+/// [trailing] is the "Updated …" pill.
 class _HeroCard extends StatelessWidget {
   final AccountBalance account;
   final Widget? trailing;
@@ -723,32 +634,6 @@ class _HeroCard extends StatelessWidget {
               ],
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The star toggle in a menu hero's top-right. Filled = this account leads
-/// the menu and is the launch default.
-class _StarButton extends StatelessWidget {
-  final bool starred;
-  final VoidCallback onTap;
-
-  const _StarButton({required this.starred, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final onContainer = Theme.of(context).colorScheme.onPrimaryContainer;
-    return InkResponse(
-      onTap: onTap,
-      radius: 22,
-      child: Padding(
-        padding: const EdgeInsets.all(2),
-        child: Icon(
-          starred ? Icons.star_rounded : Icons.star_outline_rounded,
-          size: 24,
-          color: starred ? onContainer : onContainer.withValues(alpha: 0.55),
         ),
       ),
     );
@@ -1036,6 +921,117 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     await Scraper().pushSelectedBalanceToWidget(widget.accounts);
   }
 
+  /// Popup to set a new campus-card PIN: two fields that must match. The PIN
+  /// can be any length and mix letters/digits, so no length or numeric
+  /// constraint — only that the confirmation matches. Submitting hits the site
+  /// and reports success or failure inline.
+  Future<void> _showChangePinDialog() async {
+    final pinController = TextEditingController();
+    final confirmController = TextEditingController();
+    var busy = false;
+    String? errorText;
+
+    final changed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final scheme = Theme.of(dialogContext).colorScheme;
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            Future<void> submit() async {
+              final pin = pinController.text;
+              final confirm = confirmController.text;
+              if (pin.isEmpty) {
+                setDialogState(() => errorText = "Enter a new PIN");
+                return;
+              }
+              if (pin != confirm) {
+                setDialogState(() => errorText = "PINs don't match");
+                return;
+              }
+              setDialogState(() {
+                busy = true;
+                errorText = null;
+              });
+              try {
+                final cookies = await loadSession();
+                if (cookies == null) throw Exception("Session Expired");
+                await Scraper().changeCardPin(cookies, pin);
+                if (dialogContext.mounted) {
+                  Navigator.of(dialogContext).pop(true);
+                }
+              } catch (e) {
+                setDialogState(() {
+                  busy = false;
+                  errorText = e.toString().contains("Expired")
+                      ? "Your session expired. Sign in again."
+                      : "Couldn't change your PIN. Try again.";
+                });
+              }
+            }
+
+            return AlertDialog(
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Text("Change card PIN"),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: pinController,
+                    autofocus: true,
+                    obscureText: true,
+                    enabled: !busy,
+                    decoration: const InputDecoration(
+                      labelText: "New Card PIN",
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: confirmController,
+                    obscureText: true,
+                    enabled: !busy,
+                    decoration: InputDecoration(
+                      labelText: "Re-enter Card PIN",
+                      errorText: errorText,
+                    ),
+                    onSubmitted: busy ? null : (_) => submit(),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      busy ? null : () => Navigator.of(dialogContext).pop(false),
+                  child: const Text("Cancel"),
+                ),
+                FilledButton(
+                  onPressed: busy ? null : submit,
+                  child: busy
+                      ? SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: scheme.onPrimary,
+                          ),
+                        )
+                      : const Text("Save"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (changed == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Card PIN changed.")),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1116,6 +1112,18 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             const SizedBox(height: 24),
             const Divider(height: 1),
             const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: _showChangePinDialog,
+                icon: const Icon(Icons.password_outlined),
+                label: const Text("Change card PIN"),
+                style: TextButton.styleFrom(
+                  foregroundColor: scheme.onSurfaceVariant,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
             SizedBox(
               width: double.infinity,
               child: TextButton.icon(

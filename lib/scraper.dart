@@ -229,6 +229,38 @@ class Scraper {
     return token;
   }
 
+  /// Changes the campus-card PIN. Mirrors the Personal page's form POST: the
+  /// site confirms a successful change with a **302** redirect back to
+  /// `/Account/Personal`, and signals a rejected one (e.g. server-side rules)
+  /// by re-rendering the form with a 200. So we must *not* follow redirects —
+  /// that would turn the 302 into a 200 for the Personal page and hide the
+  /// outcome — and we treat anything but 302 as a failure. The PIN is sent
+  /// as-is (any length, letters or digits); the two fields are known to match
+  /// before we get here.
+  Future<void> changeCardPin(String cookies, String pin) async {
+    final token = await _token(cookies);
+    final req = http.Request(
+      "POST",
+      Uri.parse("$_base/Account/ChangeCardPIN"),
+    )
+      ..followRedirects = false
+      ..headers.addAll({
+        "Cookie": cookies,
+        "User-Agent": _userAgent,
+        "Origin": "https://secure.touchnet.net",
+        "Referer": "$_base/Account/Personal?tab=manage-campus-tab",
+      })
+      ..bodyFields = {
+        "__RequestVerificationToken": token,
+        "ChangeCardPINModel.NewCardPIN": pin,
+        "ChangeCardPINModel.RepeatNewCardPIN": pin,
+      };
+    final res = await req.send();
+    if (res.statusCode != 302) {
+      throw Exception("Couldn't change PIN (status ${res.statusCode}).");
+    }
+  }
+
   /// Lightweight session ping. Two small requests, no balance parse. Use this
   /// when you only want to keep the session warm.
   Future<void> keepAlive(String cookies) async {

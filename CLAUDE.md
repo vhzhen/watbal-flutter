@@ -12,14 +12,11 @@ but is lower priority.
    success by the `.ASPXAUTH` cookie and saves the full cookie header.
 2. Later runs: scrapes headlessly with the saved cookies — all account balances
    and recent transactions.
-3. UI depends on account count. One account: the app *is* that account's
+3. The app opens on an all-accounts menu (tappable hero cards, scraped order,
+   shown even with a single account); tapping a card opens that account's
    detail page (hero, spending summary, search, transactions grouped by date —
    all computed from that account's transactions only, via the balance-ID
-   map). Several: an all-accounts menu (tappable hero cards, star toggle in
-   each card's top-right; the starred account — pref `starred_account`, max
-   one — sorts first), and on launch the app auto-opens the starred (or first)
-   account's detail page with the menu one back-press below. Also pushes to
-   home-screen widgets.
+   map). Also pushes to home-screen widgets.
 4. Refreshes in the background so the widgets stay current without opening the
    app — re-authenticating silently when the session expires.
 
@@ -36,10 +33,8 @@ lib/
                        # cookie-jar pruning (_clearTouchnetCookies)
   scraper.dart         # All HTTP scraping (balance + transactions), the
                        # Transaction model, and reloadWatBalWidgets()
-  home_page.dart       # HomePage (all-accounts menu, or the lone account's
-                       # detail directly) + per-account detail page, launch
-                       # auto-open of the starred account, shared
-                       # _HomeController (txns + balance-ID map + star),
+  home_page.dart       # HomePage (all-accounts menu) + per-account detail
+                       # page, shared _HomeController (txns + balance-ID map),
                        # settings dialog
   loading_page.dart    # Cold-start: try saved cookies -> silent re-auth -> login
   debug_log.dart       # File logger (works from the background isolate)
@@ -106,6 +101,16 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
    refresh. Map stores are written to the debug log (`map:` prefix). Raw names
    → UI names via top-level `accountDisplayName()` ("FLEXIBLE" → "FLEX
    DOLLARS").
+
+## Change card PIN
+
+Settings → "Change card PIN" opens a two-field popup (New / Re-enter, must
+match; PINs are any length and may mix letters/digits, so no numeric or length
+constraint). `Scraper.changeCardPin` POSTs `__RequestVerificationToken` +
+`ChangeCardPINModel.NewCardPIN` + `...RepeatNewCardPIN` to
+`/Account/ChangeCardPIN` with `followRedirects = false`: the site confirms
+success with a **302** to `/Account/Personal` and signals rejection by
+re-rendering the form (200), so non-302 is treated as an error.
 
 ## Background refresh
 
