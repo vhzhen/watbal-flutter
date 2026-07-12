@@ -38,6 +38,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late final _HomeController _data;
 
+  // Bottom-nav selection. Visual only for now — tapping highlights a tab but
+  // doesn't yet change what's shown.
+  int _navIndex = 0;
+
   @override
   void initState() {
     super.initState();
@@ -78,78 +82,95 @@ class _HomePageState extends State<HomePage> {
         builder: (_) => _AccountDetailPage(
           data: _data,
           account: account,
-          theme: widget.theme,
         ),
       ),
     );
   }
 
+  static const _navTitles = ["WatBal", "Analytics", "Extras", "Settings"];
+
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return ListenableBuilder(
       listenable: _data,
       builder: (context, _) {
-        final accounts = _data.accounts;
         return Scaffold(
           appBar: AppBar(
-            title: const Text(
-              "WatBal",
-              style: TextStyle(fontWeight: FontWeight.bold),
+            title: Text(
+              _navTitles[_navIndex],
+              style: const TextStyle(fontWeight: FontWeight.bold),
             ),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.settings_outlined),
-                onPressed: () => _showSettings(context),
-              ),
-            ],
           ),
-          body: RefreshIndicator(
-            onRefresh: _data.refresh,
-            child: ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 40),
+          bottomNavigationBar: _BottomNavBar(
+            currentIndex: _navIndex,
+            onTap: (i) => setState(() => _navIndex = i),
+          ),
+          body: switch (_navIndex) {
+            1 => const _AnalyticsView(),
+            2 => _ExtrasView(
+                accounts: _data.accounts,
+                onMealPlanChanged: _data.reloadMealPlan,
+              ),
+            3 => _SettingsView(
+                theme: widget.theme,
+                accounts: _data.accounts,
+                onSignedOut: _signOut,
+              ),
+            _ => _dashboard(context),
+          },
+        );
+      },
+    );
+  }
+
+  /// Tab 0: the accounts overview — meal-plan card + one hero per account.
+  Widget _dashboard(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accounts = _data.accounts;
+    return RefreshIndicator(
+      onRefresh: _data.refresh,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 40),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      _UpdatedPill(
-                        refreshing: _data.refreshing,
-                        updated: _data.updated,
-                        onSurface: true,
-                      ),
-                    ],
-                  ),
+                _UpdatedPill(
+                  refreshing: _data.refreshing,
+                  updated: _data.updated,
+                  onSurface: true,
                 ),
-                _MealPlanSection(
-                  data: _data,
-                  onSetup: () => _showSettings(context),
-                ),
-                for (var i = 0; i < accounts.length; i++) ...[
-                  if (i > 0) const SizedBox(height: 12),
-                  _HeroCard(
-                    account: accounts[i],
-                    caption: _caption(accounts[i]),
-                    onTap: () => _openAccount(accounts[i]),
-                  ),
-                ],
-                if (_data.error != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 24),
-                    child: Center(
-                      child: Text(
-                        _data.error!,
-                        style: TextStyle(color: scheme.onSurfaceVariant),
-                      ),
-                    ),
-                  ),
               ],
             ),
           ),
-        );
-      },
+          _MealPlanSection(
+            data: _data,
+            // Send the user to the Extras tab, where meal-plan setup lives.
+            onSetup: () => setState(() => _navIndex = 2),
+          ),
+          for (var i = 0; i < accounts.length; i++) ...[
+            if (i > 0) const SizedBox(height: 12),
+            _HeroCard(
+              account: accounts[i],
+              caption: _caption(accounts[i]),
+              onTap: () => _openAccount(accounts[i]),
+            ),
+          ],
+          if (_data.error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 24),
+              child: Center(
+                child: Text(
+                  _data.error!,
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -159,21 +180,6 @@ class _HomePageState extends State<HomePage> {
     final txns = _data.txnsFor(account);
     if (txns == null) return null;
     return "${txns.length} transaction${txns.length == 1 ? '' : 's'}";
-  }
-
-  void _showSettings(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => _SettingsDialog(
-        theme: widget.theme,
-        accounts: _data.accounts,
-        onMealPlanChanged: _data.reloadMealPlan,
-        onSignedOut: () {
-          Navigator.of(context).pop();
-          _signOut();
-        },
-      ),
-    );
   }
 }
 
@@ -208,11 +214,24 @@ class _HomeController extends ChangeNotifier {
 
   MealPlanConfig mealPlan = const MealPlanConfig();
 
-  /// (Re)reads the meal-plan selection from prefs — call after the settings
-  /// dialog changes it so the dashboard card updates immediately.
+  /// Whether the user dismissed the home-screen "Track your meal plan" CTA.
+  /// Only hides that prompt; setup stays available in the Features popup.
+  bool mealPlanCtaDismissed = false;
+
+  /// (Re)reads the meal-plan selection + CTA state from prefs — call after the
+  /// Extras tab changes either so the dashboard updates immediately.
   Future<void> reloadMealPlan() async {
     mealPlan = await MealPlanConfig.load();
+    mealPlanCtaDismissed = await loadMealPlanCtaDismissed();
     notifyListeners();
+  }
+
+  /// Hides the setup CTA for good (persisted, and never reset — not on logout
+  /// nor on switching the plan back to None). The nudge is a one-time intro.
+  Future<void> dismissMealPlanCta() async {
+    mealPlanCtaDismissed = true;
+    notifyListeners();
+    await setMealPlanCtaDismissed(true);
   }
 
   /// The designated meal-plan account's freshest balance row, or null when no
@@ -244,6 +263,7 @@ class _HomeController extends ChangeNotifier {
 
   Future<void> load() async {
     mealPlan = await MealPlanConfig.load();
+    mealPlanCtaDismissed = await loadMealPlanCtaDismissed();
     final cookies = await loadSession();
     if (cookies == null) {
       onSignedOut();
@@ -344,12 +364,10 @@ class _HomeController extends ChangeNotifier {
 class _AccountDetailPage extends StatefulWidget {
   final _HomeController data;
   final AccountBalance account;
-  final ThemeController theme;
 
   const _AccountDetailPage({
     required this.data,
     required this.account,
-    required this.theme,
   });
 
   @override
@@ -423,23 +441,6 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
               account.displayName,
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.settings_outlined),
-                onPressed: () => showDialog(
-                  context: context,
-                  builder: (dialogContext) => _SettingsDialog(
-                    theme: widget.theme,
-                    accounts: widget.data.accounts,
-                    onMealPlanChanged: widget.data.reloadMealPlan,
-                    onSignedOut: () {
-                      Navigator.of(dialogContext).pop();
-                      widget.data.onSignedOut();
-                    },
-                  ),
-                ),
-              ),
-            ],
           ),
           body: RefreshIndicator(
             onRefresh: widget.data.refresh,
@@ -597,9 +598,21 @@ class _MealPlanSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final configured =
+        data.mealPlan.isConfigured && data.mealPlanAccount != null;
+
+    // Not set up and the CTA was dismissed → show nothing at all (setup still
+    // lives in the Features popup).
+    if (!configured && data.mealPlanCtaDismissed) {
+      return const SizedBox.shrink();
+    }
+
     Widget card;
-    if (!data.mealPlan.isConfigured || data.mealPlanAccount == null) {
-      card = _MealPlanSetupCard(onTap: onSetup);
+    if (!configured) {
+      card = _MealPlanSetupCard(
+        onTap: onSetup,
+        onDismiss: data.dismissMealPlanCta,
+      );
     } else {
       final pacing = data.mealPlanPacing;
       if (pacing == null) {
@@ -620,10 +633,12 @@ class _MealPlanSection extends StatelessWidget {
   }
 }
 
-/// Shown when no meal plan is set up yet — invites the user into settings.
+/// Shown when no meal plan is set up yet — invites the user into the Features
+/// popup, or can be dismissed with the X (setup stays reachable there).
 class _MealPlanSetupCard extends StatelessWidget {
   final VoidCallback onTap;
-  const _MealPlanSetupCard({required this.onTap});
+  final VoidCallback onDismiss;
+  const _MealPlanSetupCard({required this.onTap, required this.onDismiss});
 
   @override
   Widget build(BuildContext context) {
@@ -635,7 +650,7 @@ class _MealPlanSetupCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(24),
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(20, 16, 8, 16),
           child: Row(
             children: [
               Container(
@@ -672,8 +687,13 @@ class _MealPlanSetupCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+              IconButton(
+                icon: const Icon(Icons.close, size: 18),
+                color: scheme.onSurfaceVariant,
+                tooltip: "Dismiss",
+                visualDensity: VisualDensity.compact,
+                onPressed: onDismiss,
+              ),
             ],
           ),
         ),
@@ -808,7 +828,7 @@ class _AllowanceHeadline extends StatelessWidget {
         ),
         const SizedBox(height: 2),
         Text(
-          "to finish by ${_monthDay(end)}",
+          "to finish by ${_monthDayYear(end)}",
           style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
         ),
       ],
@@ -1030,15 +1050,14 @@ class _UpdatedPill extends StatelessWidget {
 
 String _money(double v) => "\$${v.toStringAsFixed(2)}";
 
-/// "Apr 20" — or "Apr 20, 2027" when the date isn't in the current year.
-String _monthDay(DateTime d) {
-  const mo = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ];
-  final base = "${mo[d.month - 1]} ${d.day}";
-  return d.year == DateTime.now().year ? base : "$base, ${d.year}";
-}
+const List<String> _monthAbbr = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+
+/// "Apr 20, 2027" — always includes the year (used for term dates).
+String _monthDayYear(DateTime d) =>
+    "${_monthAbbr[d.month - 1]} ${d.day}, ${d.year}";
 
 /// "Today" / "Yesterday" / "Mon, Jun 14" (with year if not the current one).
 String _dayLabel(DateTime? d) {
@@ -1219,36 +1238,56 @@ class _TxnTile extends StatelessWidget {
   }
 }
 
-// ────────────────────────────── settings dialog ────────────────────────────
+// ────────────────────────────── analytics tab ──────────────────────────────
 
-class _SettingsDialog extends StatefulWidget {
-  final ThemeController theme;
-  final List<AccountBalance> accounts;
-  final VoidCallback onSignedOut;
-
-  /// Called after the user changes the meal-plan selection or its dates, so the
-  /// caller can refresh the dashboard card.
-  final VoidCallback? onMealPlanChanged;
-
-  const _SettingsDialog({
-    required this.theme,
-    required this.accounts,
-    required this.onSignedOut,
-    this.onMealPlanChanged,
-  });
+/// Tab 1: intentionally blank for now — a placeholder until analytics land.
+class _AnalyticsView extends StatelessWidget {
+  const _AnalyticsView();
 
   @override
-  State<_SettingsDialog> createState() => _SettingsDialogState();
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.analytics_outlined,
+              size: 48, color: scheme.onSurfaceVariant),
+          const SizedBox(height: 12),
+          Text(
+            "Analytics coming soon",
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class _SettingsDialogState extends State<_SettingsDialog> {
-  String? _widgetAccount;
+// ─────────────────────────────── extras tab ────────────────────────────────
+
+/// The "Extras" tab: capabilities that act on the account (meal-plan tracking,
+/// changing the card PIN) — distinct from [_SettingsView], which holds app
+/// preferences (theme, logs, sign out).
+class _ExtrasView extends StatefulWidget {
+  final List<AccountBalance> accounts;
+
+  /// Called after the meal-plan selection or its dates change, so the caller
+  /// can refresh the dashboard card.
+  final VoidCallback onMealPlanChanged;
+
+  const _ExtrasView({required this.accounts, required this.onMealPlanChanged});
+
+  @override
+  State<_ExtrasView> createState() => _ExtrasViewState();
+}
+
+class _ExtrasViewState extends State<_ExtrasView> {
   MealPlanConfig _mealPlan = const MealPlanConfig();
 
   @override
   void initState() {
     super.initState();
-    _loadWidgetAccount();
     _loadMealPlan();
   }
 
@@ -1267,8 +1306,11 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       await MealPlanConfig.clear();
     } else {
       await _mealPlan.save();
+      // Picking a plan counts as acknowledging the feature, so the home CTA
+      // never reappears even if they later switch back to None.
+      await setMealPlanCtaDismissed(true);
     }
-    widget.onMealPlanChanged?.call();
+    widget.onMealPlanChanged();
   }
 
   Future<void> _pickTermDate(bool isStart) async {
@@ -1289,7 +1331,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       );
     });
     await _mealPlan.save();
-    widget.onMealPlanChanged?.call();
+    widget.onMealPlanChanged();
   }
 
   Widget _termDateRow(
@@ -1303,7 +1345,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       dense: true,
       title: Text(label),
       trailing: Text(
-        date == null ? "Set date" : _monthDay(date),
+        date == null ? "Set date" : _monthDayYear(date),
         style: TextStyle(
           color: date == null ? scheme.primary : scheme.onSurfaceVariant,
           fontWeight: date == null ? FontWeight.w600 : FontWeight.normal,
@@ -1311,28 +1353,6 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       ),
       onTap: onTap,
     );
-  }
-
-  Future<void> _loadWidgetAccount() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString(kWidgetAccountKey);
-    if (!mounted) return;
-    setState(() {
-      // Default to the first account when nothing is saved (or the saved one
-      // no longer exists), matching what the scraper actually pushes.
-      _widgetAccount = widget.accounts.any((a) => a.name == saved)
-          ? saved
-          : (widget.accounts.isEmpty ? null : widget.accounts.first.name);
-    });
-  }
-
-  Future<void> _selectWidgetAccount(String name) async {
-    setState(() => _widgetAccount = name);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(kWidgetAccountKey, name);
-    // Re-push immediately so the home-screen widget switches without waiting
-    // for the next scrape.
-    await Scraper().pushSelectedBalanceToWidget(widget.accounts);
   }
 
   /// Popup to set a new campus-card PIN: two fields that must match. The PIN
@@ -1449,28 +1469,136 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      children: [
+        Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Text("Settings",
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        )),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
+              Text("Meal plan",
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  )),
+              const SizedBox(height: 4),
+              Text(
+                "Track one account as a meal plan to pace it down by term end.",
+                style:
+                    TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text("None"),
+                    selected: _mealPlan.accountName == null,
+                    onSelected: (_) => _setMealPlanAccount(null),
+                  ),
+                  for (final a in widget.accounts)
+                    ChoiceChip(
+                      label: Text(a.displayName),
+                      selected: _mealPlan.accountName == a.name,
+                      onSelected: (_) => _setMealPlanAccount(a.name),
+                    ),
+                ],
+              ),
+              if (_mealPlan.accountName != null) ...[
+                const SizedBox(height: 4),
+                _termDateRow("Term start", _mealPlan.start,
+                    () => _pickTermDate(true), scheme),
+                _termDateRow("Term end", _mealPlan.end,
+                    () => _pickTermDate(false), scheme),
               ],
-            ),
-            const SizedBox(height: 8),
+              const SizedBox(height: 24),
+              Text("Card PIN",
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  )),
+              const SizedBox(height: 4),
+              Text(
+                "Set a new PIN for your WatCard.",
+                style:
+                    TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                // Same widget as the "None" meal-plan chip so the font, colour,
+                // and border match exactly (it's an action, so it never shows a
+                // selected state).
+                child: ChoiceChip(
+                  label: const Text("Change card PIN"),
+                  selected: false,
+                  onSelected: (_) => _showChangePinDialog(),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+  }
+}
+
+// ─────────────────────────────── settings tab ──────────────────────────────
+
+class _SettingsView extends StatefulWidget {
+  final ThemeController theme;
+  final List<AccountBalance> accounts;
+  final VoidCallback onSignedOut;
+
+  const _SettingsView({
+    required this.theme,
+    required this.accounts,
+    required this.onSignedOut,
+  });
+
+  @override
+  State<_SettingsView> createState() => _SettingsViewState();
+}
+
+class _SettingsViewState extends State<_SettingsView> {
+  String? _widgetAccount;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadWidgetAccount();
+  }
+
+  Future<void> _loadWidgetAccount() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(kWidgetAccountKey);
+    if (!mounted) return;
+    setState(() {
+      // Default to the first account when nothing is saved (or the saved one
+      // no longer exists), matching what the scraper actually pushes.
+      _widgetAccount = widget.accounts.any((a) => a.name == saved)
+          ? saved
+          : (widget.accounts.isEmpty ? null : widget.accounts.first.name);
+    });
+  }
+
+  Future<void> _selectWidgetAccount(String name) async {
+    setState(() => _widgetAccount = name);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kWidgetAccountKey, name);
+    // Re-push immediately so the home-screen widget switches without waiting
+    // for the next scrape.
+    await Scraper().pushSelectedBalanceToWidget(widget.accounts);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Text("Theme",
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
@@ -1524,92 +1652,44 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               ),
             ],
             const SizedBox(height: 24),
-            Text("Meal plan",
+            Text("Logs",
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
                   color: scheme.onSurfaceVariant,
                 )),
-            const SizedBox(height: 4),
-            Text(
-              "Track one account as a meal plan to pace it down by term end.",
-              style: TextStyle(
-                  fontSize: 12.5, color: scheme.onSurfaceVariant),
-            ),
             const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                ChoiceChip(
-                  label: const Text("None"),
-                  selected: _mealPlan.accountName == null,
-                  onSelected: (_) => _setMealPlanAccount(null),
-                ),
-                for (final a in widget.accounts)
-                  ChoiceChip(
-                    label: Text(a.displayName),
-                    selected: _mealPlan.accountName == a.name,
-                    onSelected: (_) => _setMealPlanAccount(a.name),
-                  ),
-              ],
-            ),
-            if (_mealPlan.accountName != null) ...[
-              const SizedBox(height: 4),
-              _termDateRow("Term start", _mealPlan.start,
-                  () => _pickTermDate(true), scheme),
-              _termDateRow("Term end", _mealPlan.end,
-                  () => _pickTermDate(false), scheme),
-            ],
-            const SizedBox(height: 24),
-            const Divider(height: 1),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: TextButton.icon(
-                onPressed: _showChangePinDialog,
-                icon: const Icon(Icons.password_outlined),
-                label: const Text("Change card PIN"),
-                style: TextButton.styleFrom(
-                  foregroundColor: scheme.onSurfaceVariant,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-            SizedBox(
-              width: double.infinity,
-              child: TextButton.icon(
-                onPressed: () {
-                  Navigator.of(context).pop();
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const LogViewerPage()),
-                  );
-                },
-                icon: const Icon(Icons.description_outlined),
+            // Bordered chip matching the "None" meal-plan chip.
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ChoiceChip(
                 label: const Text("View logs"),
-                style: TextButton.styleFrom(
-                  foregroundColor: scheme.onSurfaceVariant,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
+                selected: false,
+                onSelected: (_) => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const LogViewerPage()),
                 ),
               ),
             ),
-            SizedBox(
-              width: double.infinity,
-              child: TextButton.icon(
-                onPressed: () async {
+            const SizedBox(height: 24),
+            Text("Sign Out",
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurfaceVariant,
+                )),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ChoiceChip(
+                label: const Text("Sign out"),
+                selected: false,
+                onSelected: (_) async {
                   await clearSession();
                   widget.onSignedOut();
                 },
-                icon: const Icon(Icons.logout),
-                label: const Text("Sign out"),
-                style: TextButton.styleFrom(
-                  foregroundColor: scheme.primary,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
               ),
             ),
           ],
         ),
-      ),
+      ],
     );
   }
 }
@@ -1664,6 +1744,118 @@ class _ThemeSwatch extends StatelessWidget {
                 fontSize: 12,
                 fontWeight: selected ? FontWeight.bold : FontWeight.normal,
                 color: scheme.onSurface,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────── bottom nav bar ────────────────────────────
+
+/// Floating, rounded bottom navigation bar. Purely presentational for now:
+/// tapping a tab updates the highlighted selection but doesn't change what the
+/// screen shows.
+class _BottomNavBar extends StatelessWidget {
+  final int currentIndex;
+  final ValueChanged<int> onTap;
+
+  const _BottomNavBar({required this.currentIndex, required this.onTap});
+
+  // (unselected icon, selected icon, label)
+  static const _items = <(IconData, IconData, String)>[
+    (Icons.dashboard_outlined, Icons.dashboard_rounded, 'Dashboard'),
+    (Icons.analytics_outlined, Icons.analytics_rounded, 'Analytics'),
+    (Icons.extension_outlined, Icons.extension_rounded, 'Extras'),
+    (Icons.settings_outlined, Icons.settings_rounded, 'Settings'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainer,
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            for (var i = 0; i < _items.length; i++)
+              _NavItem(
+                icon: currentIndex == i ? _items[i].$2 : _items[i].$1,
+                label: _items[i].$3,
+                selected: currentIndex == i,
+                onTap: () => onTap(i),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NavItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _NavItem({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color =
+        selected ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      // No ripple/highlight: the pill is the only selection feedback, so a tap
+      // can never flash a fading splash over the previous selection.
+      splashColor: Colors.transparent,
+      highlightColor: Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Plain Container (not AnimatedContainer): the highlight appears and
+            // disappears instantly, so the old tab's pill doesn't linger/fade.
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+              decoration: BoxDecoration(
+                color:
+                    selected ? scheme.secondaryContainer : Colors.transparent,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(icon, size: 22, color: color),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                color: color,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
               ),
             ),
           ],

@@ -89,18 +89,13 @@ class _LoadingPageState extends State<LoadingPage> {
           : "Please sign in to see your balance.";
     });
 
-    final header = await showModalBottomSheet<String?>(
-      context: context,
-      isScrollControlled: true,
-      isDismissible: false,
-      enableDrag: false,
-      backgroundColor: Colors.transparent,
-      builder: (_) => FractionallySizedBox(
-        heightFactor: 0.95,
-        child: ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-          child: const LoginWebView(),
-        ),
+    // Full-screen page rather than a modal bottom sheet: the sheet's own
+    // window/IME handling suppresses the system autofill bar (saved passwords)
+    // on Android, and a full page is the normal home for a login form anyway.
+    final header = await Navigator.of(context).push<String?>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const LoginWebView(),
       ),
     );
 

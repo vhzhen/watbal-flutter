@@ -5,7 +5,6 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:watbal/meal_plan.dart';
 import 'package:watbal/scraper.dart';
 
 const String _dashboardUrl =
@@ -61,11 +60,11 @@ Future<void> clearSession() async {
     await HomeWidget.setAppGroupId(_appGroupId);
     await HomeWidget.saveWidgetData<String>(_prefsKey, null);
   } catch (_) {}
-  // Cached transactions / account map / meal-plan selection belong to this
-  // login; a different user signing in next must not inherit (or merge into)
-  // them.
+  // Cached transactions / account map belong to this login; a different user
+  // signing in next must not inherit (or merge into) them. The meal-plan
+  // selection + term dates are intentionally *kept* so a returning user doesn't
+  // have to reconfigure them every sign-in.
   await clearScraperCache();
-  await MealPlanConfig.clear();
   await CookieManager.instance().deleteAllCookies();
 }
 
@@ -254,6 +253,13 @@ class _LoginWebViewState extends State<LoginWebView> {
   bool _cover = true;
   double _progress = 0;
   int _recoveries = 0;
+  String _url = _dashboardUrl;
+
+  void _trackUrl(WebUri? url) {
+    if (url == null || !mounted) return;
+    final s = url.toString();
+    if (s != _url) setState(() => _url = s);
+  }
 
   /// Last-resort self-heal for a login page that itself answers with a
   /// header-overflow status (see [_headerOverflowStatuses]) — the state that
@@ -319,9 +325,41 @@ class _LoginWebViewState extends State<LoginWebView> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final secure = _url.startsWith("https");
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Sign in"),
+        titleSpacing: 0,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("Sign in", style: TextStyle(fontSize: 16)),
+            const SizedBox(height: 2),
+            Row(
+              children: [
+                Icon(
+                  secure ? Icons.lock_outline : Icons.info_outline,
+                  size: 12,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    _url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.normal,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: () => Navigator.of(context).pop(null),
@@ -340,17 +378,32 @@ class _LoginWebViewState extends State<LoginWebView> {
             initialSettings: InAppWebViewSettings(
               cacheEnabled: true,
               isFraudulentWebsiteWarningEnabled: true,
+              // Password autofill: on Android O+ the system autofill service
+              // (e.g. Google Password Manager) fills WebView login forms, but
+              // only when the WebView is a real view in the hierarchy — that's
+              // hybrid composition. Both are package defaults; set explicitly so
+              // saved-password autofill can't regress if a default changes.
+              // saveFormData lets the login also *offer* to save new passwords.
+              useHybridComposition: true,
+              saveFormData: true,
             ),
             onProgressChanged: (_, p) => setState(() => _progress = p / 100),
             onLoadStart: (controller, url) {
+              _trackUrl(url);
               // Cover during *any* navigation so we never flash the
               // authenticated Dashboard between redirects.
               if (!_cover && mounted && !_done) {
                 setState(() => _cover = true);
               }
             },
-            onLoadStop: (c, url) => _evaluate(c, url),
-            onUpdateVisitedHistory: (c, url, _) => _evaluate(c, url),
+            onLoadStop: (c, url) {
+              _trackUrl(url);
+              _evaluate(c, url);
+            },
+            onUpdateVisitedHistory: (c, url, _) {
+              _trackUrl(url);
+              _evaluate(c, url);
+            },
             onReceivedHttpError: _recoverFromHeaderOverflow,
           ),
           if (_cover)

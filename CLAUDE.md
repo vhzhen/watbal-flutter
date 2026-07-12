@@ -71,6 +71,17 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
   `LoginWebView` would mistake for a completed login. As a backstop,
   `LoginWebView` self-heals on a main-frame 400/413/431/494: first prune
   TouchNet cookies, then wipe the whole jar (one full DUO sign-in).
+- **Password autofill:** the visible `LoginWebView` participates in Android's
+  system autofill (Google Password Manager etc.) so saved passwords for the
+  SSO domain are offered in the form. Requirements, all set: hybrid composition
+  + `saveFormData` on the WebView (auth.dart, explicit though both are package
+  defaults), `android:importantForAutofill="yes"` on `MainActivity` (manifest),
+  and the login is shown as a **full-screen route** (loading_page.dart), *not*
+  a modal bottom sheet — the sheet's window/IME handling suppresses the autofill
+  bar. Actual credentials come from the device's autofill service, matched by
+  web domain — nothing is stored by the app. The AppBar shows a live URL bar
+  (lock icon + current URL) so the domain is visible. iOS WKWebView offers
+  Keychain autofill natively, no config.
 
 ## Scraping flow (order matters — see scraper.dart)
 
@@ -108,9 +119,24 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
    → UI names via top-level `accountDisplayName()` ("FLEXIBLE" → "FLEX
    DOLLARS").
 
+## Bottom navigation
+
+`HomePage` hosts a floating rounded bottom nav (`_BottomNavBar`) with four tabs;
+`_navIndex` selects the body via a `switch`:
+- **Dashboard** (`_dashboard`): the accounts overview — meal-plan card + hero
+  cards. Tapping a hero pushes `_AccountDetailPage` (its own route, no nav bar).
+- **Analytics** (`_AnalyticsView`): intentionally blank placeholder for now.
+- **Extras** (`_ExtrasView`): meal-plan setup (see below) + Change card PIN.
+  The home meal-plan CTA jumps here (`_navIndex = 2`).
+- **Settings** (`_SettingsView`): theme picker, widget account (when >1
+  account), View logs, Sign out.
+
+Extras/Settings are plain scrollable tab bodies (formerly modal dialogs); the
+AppBar title tracks the tab and has no action icons.
+
 ## Change card PIN
 
-Settings → "Change card PIN" opens a two-field popup (New / Re-enter, must
+Extras → "Change card PIN" opens a two-field popup (New / Re-enter, must
 match; PINs are any length and may mix letters/digits, so no numeric or length
 constraint). `Scraper.changeCardPin` POSTs `__RequestVerificationToken` +
 `ChangeCardPINModel.NewCardPIN` + `...RepeatNewCardPIN` to
@@ -179,15 +205,22 @@ the native maps harmlessly). Purple = `deepPurple` seed
 ## Meal-plan tracking
 
 A meal plan is a fixed pot to *finish* by term end (unlike FLEX). The user
-designates **one** account as the meal plan and sets its term start/end in
-Settings (`meal_plan.dart`: `MealPlanConfig`, prefs `meal_plan_account` /
-`_start` / `_end`, cleared on sign-out). `MealPlanPacing.compute` derives the
+designates **one** account as the meal plan and sets its term start/end in the
+**Extras** tab (`meal_plan.dart`: `MealPlanConfig`, prefs `meal_plan_account` /
+`_start` / `_end`). `MealPlanPacing.compute` derives the
 per-day allowance (`balance / daysRemaining`), a recent pace (debits over a
 trailing 14-day window), and a status verdict (on track / spending too fast /
 money to spare / term ended) by projecting the run-out date against term end
 (±5-day slack). The first page shows `_MealPlanCard` at the top of the accounts
 list — a setup CTA when unconfigured, a shimmer while its txns load, else the
-pacing dashboard. Only the designated account is treated as a meal plan.
+pacing dashboard. The CTA is a **one-time nudge**: pref
+`meal_plan_cta_dismissed` is set true when the user taps its X *or* picks any
+account, and is **never reset** — not on sign-out, not on switching back to
+None — so once acknowledged it never returns. Only the designated account is
+treated as a meal plan. The selection, term dates, and CTA flag all **persist
+across sign-out** (unlike the transaction cache / balance-ID map, which
+`clearSession` wipes) so a returning user doesn't reconfigure;
+`MealPlanConfig.clear` (the "None" choice) only drops the selection.
 
 ## Loading states
 

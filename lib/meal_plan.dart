@@ -12,6 +12,19 @@ import 'package:watbal/scraper.dart';
 const String _kAccountKey = 'meal_plan_account';
 const String _kStartKey = 'meal_plan_start';
 const String _kEndKey = 'meal_plan_end';
+const String _kCtaDismissedKey = 'meal_plan_cta_dismissed';
+
+/// Whether the user dismissed the "Track your meal plan" home-screen CTA. Only
+/// hides that prompt — meal-plan setup stays reachable in the Features popup.
+Future<bool> loadMealPlanCtaDismissed() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getBool(_kCtaDismissedKey) ?? false;
+}
+
+Future<void> setMealPlanCtaDismissed(bool value) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setBool(_kCtaDismissedKey, value);
+}
 
 /// The user's meal-plan selection: which account, and the term window. Any
 /// field may be null until the user finishes setup.
@@ -43,7 +56,10 @@ class MealPlanConfig {
     await _put(prefs, _kEndKey, end == null ? null : _fmt(end!));
   }
 
-  /// Clears the meal-plan selection entirely (the "None" choice / sign-out).
+  /// Clears the meal-plan selection (the "None" choice). Deliberately *not*
+  /// called on sign-out: the selection + term dates persist across logout so a
+  /// returning user doesn't have to set them up again. Leaves the CTA-dismissed
+  /// flag alone so re-selecting None doesn't resurrect a prompt the user hid.
   static Future<void> clear() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kAccountKey);
