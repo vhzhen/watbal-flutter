@@ -148,6 +148,14 @@ data class WidgetTheme(
                 Color.parseColor("#8C1414"),
                 Color.parseColor("#1B5E20"),
             )
+            "purple" -> WidgetTheme(
+                R.drawable.watbal_widget_bg_purple,
+                Color.parseColor("#5B00C5"), // onPrimaryContainer
+                Color.parseColor("#5B00C5"),
+                Color.parseColor("#B35B00C5"),
+                Color.parseColor("#BA1A1A"), // error
+                Color.parseColor("#1B6B2E"),
+            )
             else -> WidgetTheme(
                 R.drawable.watbal_widget_bg_light,
                 Color.parseColor("#00497D"), // onPrimaryContainer

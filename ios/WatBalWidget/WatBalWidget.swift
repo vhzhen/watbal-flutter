@@ -25,6 +25,15 @@ struct WidgetTheme {
                 text: Color(red: 0.10, green: 0.18, blue: 0.10),
                 secondary: Color(red: 0.30, green: 0.40, blue: 0.30)
             )
+        case "purple":
+            // ColorScheme.fromSeed(deepPurple, light, vibrant): container
+            // #EBDDFF, onContainer #5B00C5.
+            return WidgetTheme(
+                background: Color(red: 0.92, green: 0.87, blue: 1.0),
+                primary: Color(red: 0.36, green: 0.0, blue: 0.77),
+                text: Color(red: 0.36, green: 0.0, blue: 0.77),
+                secondary: Color(red: 0.36, green: 0.0, blue: 0.77).opacity(0.7)
+            )
         default: // light
             return WidgetTheme(
                 background: .white,

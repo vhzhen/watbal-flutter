@@ -87,6 +87,11 @@ class AccountBalance {
 
   /// User-facing name — see [accountDisplayName].
   String get displayName => accountDisplayName(name);
+
+  /// Numeric value of [amount] ("$1,234.56" → 1234.56), or null when the
+  /// scraped string doesn't parse. Used by the meal-plan pacing math.
+  double? get amountValue =>
+      double.tryParse(amount.replaceAll(RegExp(r'[^0-9.\-]'), ''));
 }
 
 /// One row from the TouchNet transaction-history table.

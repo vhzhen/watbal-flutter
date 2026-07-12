@@ -57,25 +57,25 @@ Future<void> main() async {
 
 // ─────────────────────────── theme persistence ─────────────────────────────
 
-enum AppTheme { light, dark, green }
+enum AppTheme { light, dark, purple }
 
 extension AppThemeX on AppTheme {
   String get label => switch (this) {
         AppTheme.light => 'Light',
         AppTheme.dark => 'Dark',
-        AppTheme.green => 'Green',
+        AppTheme.purple => 'Purple',
       };
 
   Color get swatch => switch (this) {
         AppTheme.light => Colors.white,
         AppTheme.dark => const Color(0xFF1C1C1E),
-        AppTheme.green => const Color(0xFF2E7D32),
+        AppTheme.purple => const Color(0xFF6A1B9A),
       };
 
   ThemeData get themeData => switch (this) {
         AppTheme.light => _build(Colors.blue, Brightness.light),
         AppTheme.dark => _build(Colors.blue, Brightness.dark),
-        AppTheme.green => _build(Colors.green, Brightness.light),
+        AppTheme.purple => _build(Colors.deepPurple, Brightness.light),
       };
 }
 

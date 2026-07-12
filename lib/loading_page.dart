@@ -118,42 +118,129 @@ class _LoadingPageState extends State<LoadingPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // Two faces of the same screen: a branded splash while we're working
+    // (cold-start session check / silent re-auth), and a professional sign-in
+    // screen once we know the user has to tap Sign In.
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("WatBal",
-            style: TextStyle(fontWeight: FontWeight.bold)),
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (_busy)
-              const CircularProgressIndicator()
-            else
-              Icon(Icons.lock_outline,
-                  size: 48, color: scheme.onSurfaceVariant),
-            const SizedBox(height: 24),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                _status,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: scheme.onSurfaceVariant,
-                  fontSize: 16,
-                ),
-              ),
-            ),
-            if (!_busy) ...[
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _trySilentThenPrompt,
-                child: const Text("Sign in"),
-              ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            // Stretch to full width so content stays centred in the busy
+            // state too (which has no full-width child to expand the column).
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Spacer(flex: 3),
+              _Brandmark(scheme: scheme),
+              const Spacer(flex: 4),
+              if (_busy)
+                _busyFooter(scheme)
+              else
+                _signInFooter(scheme),
+              const Spacer(flex: 2),
             ],
-          ],
+          ),
         ),
       ),
+    );
+  }
+
+  /// Splash footer: a slim progress bar + status while the app works.
+  Widget _busyFooter(ColorScheme scheme) {
+    return Column(
+      children: [
+        SizedBox(
+          width: 120,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              minHeight: 4,
+              backgroundColor: scheme.surfaceContainerHighest,
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Text(
+          _status,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15),
+        ),
+      ],
+    );
+  }
+
+  /// Sign-in footer: a status line + a full-width primary Sign In button.
+  Widget _signInFooter(ColorScheme scheme) {
+    return Column(
+      children: [
+        Text(
+          _status,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15),
+        ),
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: _trySilentThenPrompt,
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              textStyle: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            child: const Text("Sign In"),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The app's logo lockup: a rounded balance-tile icon over the wordmark and a
+/// tagline — the banking-app first impression.
+class _Brandmark extends StatelessWidget {
+  final ColorScheme scheme;
+  const _Brandmark({required this.scheme});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            color: scheme.primaryContainer,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Icon(
+            Icons.account_balance_wallet_rounded,
+            size: 38,
+            color: scheme.onPrimaryContainer,
+          ),
+        ),
+        const SizedBox(height: 20),
+        Text(
+          "WatBal",
+          style: TextStyle(
+            fontSize: 32,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.5,
+            color: scheme.onSurface,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          "Your campus balance, at a glance",
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 15, color: scheme.onSurfaceVariant),
+        ),
+      ],
     );
   }
 }

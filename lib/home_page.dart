@@ -4,7 +4,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:watbal/auth.dart';
 import 'package:watbal/log_viewer_page.dart';
 import 'package:watbal/main.dart';
+import 'package:watbal/meal_plan.dart';
 import 'package:watbal/scraper.dart';
+import 'package:watbal/skeletons.dart';
 
 /// The app's root screen: the all-accounts menu — one tappable hero card per
 /// account, in scraped order, regardless of how many accounts exist. Tapping
@@ -121,6 +123,10 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                 ),
+                _MealPlanSection(
+                  data: _data,
+                  onSetup: () => _showSettings(context),
+                ),
                 for (var i = 0; i < accounts.length; i++) ...[
                   if (i > 0) const SizedBox(height: 12),
                   _HeroCard(
@@ -161,6 +167,7 @@ class _HomePageState extends State<HomePage> {
       builder: (_) => _SettingsDialog(
         theme: widget.theme,
         accounts: _data.accounts,
+        onMealPlanChanged: _data.reloadMealPlan,
         onSignedOut: () {
           Navigator.of(context).pop();
           _signOut();
@@ -199,7 +206,44 @@ class _HomeController extends ChangeNotifier {
   bool refreshing = false;
   String? error;
 
+  MealPlanConfig mealPlan = const MealPlanConfig();
+
+  /// (Re)reads the meal-plan selection from prefs — call after the settings
+  /// dialog changes it so the dashboard card updates immediately.
+  Future<void> reloadMealPlan() async {
+    mealPlan = await MealPlanConfig.load();
+    notifyListeners();
+  }
+
+  /// The designated meal-plan account's freshest balance row, or null when no
+  /// meal plan is set (or its account is no longer present).
+  AccountBalance? get mealPlanAccount {
+    final name = mealPlan.accountName;
+    if (name == null) return null;
+    for (final a in _accounts) {
+      if (a.name == name) return a;
+    }
+    return null;
+  }
+
+  /// Pacing snapshot for the designated meal plan, or null when it isn't fully
+  /// configured, its account is gone, or transactions haven't loaded yet.
+  MealPlanPacing? get mealPlanPacing {
+    if (!mealPlan.isConfigured) return null;
+    final account = mealPlanAccount;
+    final txns = account == null ? null : txnsFor(account);
+    final balance = account?.amountValue;
+    if (account == null || txns == null || balance == null) return null;
+    return MealPlanPacing.compute(
+      balance: balance,
+      start: mealPlan.start!,
+      end: mealPlan.end!,
+      txns: txns,
+    );
+  }
+
   Future<void> load() async {
+    mealPlan = await MealPlanConfig.load();
     final cookies = await loadSession();
     if (cookies == null) {
       onSignedOut();
@@ -387,6 +431,7 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
                   builder: (dialogContext) => _SettingsDialog(
                     theme: widget.theme,
                     accounts: widget.data.accounts,
+                    onMealPlanChanged: widget.data.reloadMealPlan,
                     onSignedOut: () {
                       Navigator.of(dialogContext).pop();
                       widget.data.onSignedOut();
@@ -485,11 +530,13 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
     final error = widget.data.error;
     if (error != null) return [_message(scheme, error)];
     if (txns == null) {
+      // Hero + summary above already show real balance data; only the history
+      // is still loading, so skeleton just the rows.
       return [
-        const SliverToBoxAdapter(
+        SliverToBoxAdapter(
           child: Padding(
-            padding: EdgeInsets.symmetric(vertical: 48),
-            child: Center(child: CircularProgressIndicator()),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            child: txnRowsSkeleton(),
           ),
         ),
       ];
@@ -534,6 +581,295 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
           ),
         ),
       );
+}
+
+// ───────────────────────────── meal-plan dashboard ─────────────────────────
+
+/// The first-page meal-plan slot. Three states: not set up (a CTA to open
+/// settings), set up but transactions still loading (a shimmer placeholder),
+/// and ready (the pacing card). Always followed by spacing before the account
+/// list.
+class _MealPlanSection extends StatelessWidget {
+  final _HomeController data;
+  final VoidCallback onSetup;
+
+  const _MealPlanSection({required this.data, required this.onSetup});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget card;
+    if (!data.mealPlan.isConfigured || data.mealPlanAccount == null) {
+      card = _MealPlanSetupCard(onTap: onSetup);
+    } else {
+      final pacing = data.mealPlanPacing;
+      if (pacing == null) {
+        // Configured, but this account's transactions haven't landed yet.
+        card = const Shimmer(child: Skeleton(height: 128, radius: 24));
+      } else {
+        card = _MealPlanCard(
+          account: data.mealPlanAccount!,
+          pacing: pacing,
+          end: data.mealPlan.end!,
+        );
+      }
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: card,
+    );
+  }
+}
+
+/// Shown when no meal plan is set up yet — invites the user into settings.
+class _MealPlanSetupCard extends StatelessWidget {
+  final VoidCallback onTap;
+  const _MealPlanSetupCard({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(24),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: scheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(Icons.insights_rounded,
+                    color: scheme.onPrimaryContainer, size: 24),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "Track your meal plan",
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "See how much you can spend per day to finish on time.",
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The pacing dashboard: how much can be spent per day to finish the plan by
+/// term end, a status verdict, and a term-progress bar.
+class _MealPlanCard extends StatelessWidget {
+  final AccountBalance account;
+  final MealPlanPacing pacing;
+  final DateTime end;
+
+  const _MealPlanCard({
+    required this.account,
+    required this.pacing,
+    required this.end,
+  });
+
+  static const _green = Color(0xFF2E9E5B);
+  static const _amber = Color(0xFFC77700);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final ended = pacing.status == MealPlanStatus.termEnded;
+    final (statusText, statusColor) = switch (pacing.status) {
+      MealPlanStatus.onTrack => ("On track", _green),
+      MealPlanStatus.tooFast => ("Spending too fast", scheme.error),
+      MealPlanStatus.moneyToSpare => ("Money to spare", _amber),
+      MealPlanStatus.termEnded => ("Term ended", scheme.onSurfaceVariant),
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  "MEAL PLAN · ${account.displayName}",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.1,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              _StatusPill(text: statusText, color: statusColor),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (ended)
+            _EndedHeadline(balance: pacing.balance, scheme: scheme)
+          else
+            _AllowanceHeadline(pacing: pacing, end: end, scheme: scheme),
+          const SizedBox(height: 16),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: pacing.termElapsedFraction,
+              minHeight: 6,
+              backgroundColor: scheme.surface,
+              valueColor: AlwaysStoppedAnimation(scheme.primary),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            ended
+                ? "${_money(pacing.balance)} left over"
+                : "${_money(pacing.balance)} left · "
+                    "${pacing.daysRemaining} day${pacing.daysRemaining == 1 ? '' : 's'} remaining",
+            style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AllowanceHeadline extends StatelessWidget {
+  final MealPlanPacing pacing;
+  final DateTime end;
+  final ColorScheme scheme;
+
+  const _AllowanceHeadline({
+    required this.pacing,
+    required this.end,
+    required this.scheme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(
+              _money(pacing.perDayAllowance),
+              style: TextStyle(
+                fontSize: 40,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -1,
+                color: scheme.onSurface,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              "/ day",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          "to finish by ${_monthDay(end)}",
+          style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+class _EndedHeadline extends StatelessWidget {
+  final double balance;
+  final ColorScheme scheme;
+  const _EndedHeadline({required this.balance, required this.scheme});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          balance <= 0 ? "All used up" : "Term's over",
+          style: TextStyle(
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.5,
+            color: scheme.onSurface,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          balance <= 0
+              ? "You finished your meal plan."
+              : "Your term has ended.",
+          style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  final String text;
+  final Color color;
+  const _StatusPill({required this.text, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
+    );
+  }
 }
 
 // ─────────────────────────────── hero card ─────────────────────────────────
@@ -693,6 +1029,16 @@ class _UpdatedPill extends StatelessWidget {
 // ───────────────────────────── formatting ──────────────────────────────────
 
 String _money(double v) => "\$${v.toStringAsFixed(2)}";
+
+/// "Apr 20" — or "Apr 20, 2027" when the date isn't in the current year.
+String _monthDay(DateTime d) {
+  const mo = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  final base = "${mo[d.month - 1]} ${d.day}";
+  return d.year == DateTime.now().year ? base : "$base, ${d.year}";
+}
 
 /// "Today" / "Yesterday" / "Mon, Jun 14" (with year if not the current one).
 String _dayLabel(DateTime? d) {
@@ -880,10 +1226,15 @@ class _SettingsDialog extends StatefulWidget {
   final List<AccountBalance> accounts;
   final VoidCallback onSignedOut;
 
+  /// Called after the user changes the meal-plan selection or its dates, so the
+  /// caller can refresh the dashboard card.
+  final VoidCallback? onMealPlanChanged;
+
   const _SettingsDialog({
     required this.theme,
     required this.accounts,
     required this.onSignedOut,
+    this.onMealPlanChanged,
   });
 
   @override
@@ -892,11 +1243,74 @@ class _SettingsDialog extends StatefulWidget {
 
 class _SettingsDialogState extends State<_SettingsDialog> {
   String? _widgetAccount;
+  MealPlanConfig _mealPlan = const MealPlanConfig();
 
   @override
   void initState() {
     super.initState();
     _loadWidgetAccount();
+    _loadMealPlan();
+  }
+
+  Future<void> _loadMealPlan() async {
+    final config = await MealPlanConfig.load();
+    if (mounted) setState(() => _mealPlan = config);
+  }
+
+  Future<void> _setMealPlanAccount(String? name) async {
+    setState(() {
+      _mealPlan = name == null
+          ? const MealPlanConfig()
+          : _mealPlan.copyWith(accountName: name);
+    });
+    if (name == null) {
+      await MealPlanConfig.clear();
+    } else {
+      await _mealPlan.save();
+    }
+    widget.onMealPlanChanged?.call();
+  }
+
+  Future<void> _pickTermDate(bool isStart) async {
+    final initial =
+        (isStart ? _mealPlan.start : _mealPlan.end) ?? DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked == null) return;
+    setState(() {
+      _mealPlan = MealPlanConfig(
+        accountName: _mealPlan.accountName,
+        start: isStart ? picked : _mealPlan.start,
+        end: isStart ? _mealPlan.end : picked,
+      );
+    });
+    await _mealPlan.save();
+    widget.onMealPlanChanged?.call();
+  }
+
+  Widget _termDateRow(
+    String label,
+    DateTime? date,
+    VoidCallback onTap,
+    ColorScheme scheme,
+  ) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      title: Text(label),
+      trailing: Text(
+        date == null ? "Set date" : _monthDay(date),
+        style: TextStyle(
+          color: date == null ? scheme.primary : scheme.onSurfaceVariant,
+          fontWeight: date == null ? FontWeight.w600 : FontWeight.normal,
+        ),
+      ),
+      onTap: onTap,
+    );
   }
 
   Future<void> _loadWidgetAccount() async {
@@ -1108,6 +1522,43 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                       .toList(),
                 ),
               ),
+            ],
+            const SizedBox(height: 24),
+            Text("Meal plan",
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurfaceVariant,
+                )),
+            const SizedBox(height: 4),
+            Text(
+              "Track one account as a meal plan to pace it down by term end.",
+              style: TextStyle(
+                  fontSize: 12.5, color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ChoiceChip(
+                  label: const Text("None"),
+                  selected: _mealPlan.accountName == null,
+                  onSelected: (_) => _setMealPlanAccount(null),
+                ),
+                for (final a in widget.accounts)
+                  ChoiceChip(
+                    label: Text(a.displayName),
+                    selected: _mealPlan.accountName == a.name,
+                    onSelected: (_) => _setMealPlanAccount(a.name),
+                  ),
+              ],
+            ),
+            if (_mealPlan.accountName != null) ...[
+              const SizedBox(height: 4),
+              _termDateRow("Term start", _mealPlan.start,
+                  () => _pickTermDate(true), scheme),
+              _termDateRow("Term end", _mealPlan.end,
+                  () => _pickTermDate(false), scheme),
             ],
             const SizedBox(height: 24),
             const Divider(height: 1),

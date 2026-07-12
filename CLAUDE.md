@@ -12,11 +12,12 @@ but is lower priority.
    success by the `.ASPXAUTH` cookie and saves the full cookie header.
 2. Later runs: scrapes headlessly with the saved cookies — all account balances
    and recent transactions.
-3. The app opens on an all-accounts menu (tappable hero cards, scraped order,
-   shown even with a single account); tapping a card opens that account's
-   detail page (hero, spending summary, search, transactions grouped by date —
-   all computed from that account's transactions only, via the balance-ID
-   map). Also pushes to home-screen widgets.
+3. The app opens on an all-accounts menu: a meal-plan pacing dashboard on top
+   (see below), then tappable balance hero cards (scraped order, shown even
+   with a single account). Tapping a card opens that account's detail page
+   (hero, spending summary, search, transactions grouped by date — all computed
+   from that account's transactions only, via the balance-ID map). Also pushes
+   to home-screen widgets.
 4. Refreshes in the background so the widgets stay current without opening the
    app — re-authenticating silently when the session expires.
 
@@ -33,10 +34,15 @@ lib/
                        # cookie-jar pruning (_clearTouchnetCookies)
   scraper.dart         # All HTTP scraping (balance + transactions), the
                        # Transaction model, and reloadWatBalWidgets()
-  home_page.dart       # HomePage (all-accounts menu) + per-account detail
-                       # page, shared _HomeController (txns + balance-ID map),
-                       # settings dialog
-  loading_page.dart    # Cold-start: try saved cookies -> silent re-auth -> login
+  home_page.dart       # HomePage (all-accounts menu + meal-plan dashboard) +
+                       # per-account detail page, shared _HomeController (txns +
+                       # balance-ID map + meal-plan config), settings dialog
+  loading_page.dart    # Cold-start splash + branded sign-in screen; try saved
+                       # cookies -> silent re-auth -> login
+  meal_plan.dart       # MealPlanConfig (designated account + term dates) and
+                       # MealPlanPacing.compute (per-day allowance + verdict)
+  skeletons.dart       # Pure-Flutter shimmer skeletons (Skeleton, Shimmer,
+                       # txnRowsSkeleton) for first-load states
   debug_log.dart       # File logger (works from the background isolate)
   log_viewer_page.dart # In-app log viewer (Settings -> View logs)
 android/  # Active. 3 widgets + WorkManager background refresh (see below).
@@ -158,9 +164,39 @@ widget title), `transactions_json`, `last_updated`, `app_theme`.
 
 ## Themes
 
-`AppTheme { light, dark, green }` (main.dart), Material 3 `ColorScheme.fromSeed`
-(vibrant variant). Widgets mirror these via the `app_theme` key. UI must use
+`AppTheme { light, dark, purple }` (main.dart), Material 3
+`ColorScheme.fromSeed` (vibrant variant). Widgets mirror these via the
+`app_theme` key — the native theme maps (`WidgetTheme.named` in
+`WatBalWidgetReceiver.kt`, shared by all Android widgets; the Swift switch in
+`WatBalWidget.swift`) hardcode each theme's `primaryContainer`/`onPrimaryContainer`
+hex and **fall back to light** for an unknown name, so a new app theme is safe
+even before the native maps learn it (the retired `green` case still lives in
+the native maps harmlessly). Purple = `deepPurple` seed
+(container #EBDDFF / onContainer #5B00C5); its widget background lives in
+`res/drawable/watbal_widget_bg_purple.xml`. UI must use
 `Theme.of(context).colorScheme` — no hardcoded colors.
+
+## Meal-plan tracking
+
+A meal plan is a fixed pot to *finish* by term end (unlike FLEX). The user
+designates **one** account as the meal plan and sets its term start/end in
+Settings (`meal_plan.dart`: `MealPlanConfig`, prefs `meal_plan_account` /
+`_start` / `_end`, cleared on sign-out). `MealPlanPacing.compute` derives the
+per-day allowance (`balance / daysRemaining`), a recent pace (debits over a
+trailing 14-day window), and a status verdict (on track / spending too fast /
+money to spare / term ended) by projecting the run-out date against term end
+(±5-day slack). The first page shows `_MealPlanCard` at the top of the accounts
+list — a setup CTA when unconfigured, a shimmer while its txns load, else the
+pacing dashboard. Only the designated account is treated as a meal plan.
+
+## Loading states
+
+First-load placeholders use pure-Flutter shimmer (`skeletons.dart`, no
+dependency): the account-detail history shows `txnRowsSkeleton()` while
+transactions load (hero + summary already have balance data); the meal-plan
+card shimmers until its account's txns arrive. Cold start / sign-in is a
+branded splash + `Sign In` screen in `loading_page.dart` (auth logic unchanged
+— saved cookies → `trySilentReauth` → `LoginWebView`).
 
 ## Logging / debugging
 

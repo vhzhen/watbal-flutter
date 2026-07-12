@@ -5,6 +5,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:watbal/meal_plan.dart';
 import 'package:watbal/scraper.dart';
 
 const String _dashboardUrl =
@@ -60,9 +61,11 @@ Future<void> clearSession() async {
     await HomeWidget.setAppGroupId(_appGroupId);
     await HomeWidget.saveWidgetData<String>(_prefsKey, null);
   } catch (_) {}
-  // Cached transactions / account map belong to this login; a different user
-  // signing in next must not inherit (or merge into) them.
+  // Cached transactions / account map / meal-plan selection belong to this
+  // login; a different user signing in next must not inherit (or merge into)
+  // them.
   await clearScraperCache();
+  await MealPlanConfig.clear();
   await CookieManager.instance().deleteAllCookies();
 }
 
