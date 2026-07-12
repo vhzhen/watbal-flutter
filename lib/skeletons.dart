@@ -126,3 +126,80 @@ Widget txnRowsSkeleton() {
   );
 }
 
+/// Dashboard tab placeholder: the "updated" pill, meal-plan card, and a couple
+/// of account hero cards.
+Widget dashboardSkeleton() {
+  return Shimmer(
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
+      children: const [
+        Align(
+          alignment: Alignment.centerRight,
+          child: Skeleton(width: 96, height: 24, radius: 20),
+        ),
+        SizedBox(height: 20),
+        Skeleton(height: 128, radius: 24),
+        SizedBox(height: 20),
+        Skeleton(height: 132, radius: 28),
+        SizedBox(height: 12),
+        Skeleton(height: 132, radius: 28),
+      ],
+    ),
+  );
+}
+
+/// Analytics tab placeholder: summary card, chart card, and the stat row.
+Widget analyticsSkeleton() {
+  return Shimmer(
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+      children: [
+        const Skeleton(height: 132, radius: 24),
+        const SizedBox(height: 16),
+        const Skeleton(height: 236, radius: 24),
+        const SizedBox(height: 16),
+        Row(
+          children: const [
+            Expanded(child: Skeleton(height: 64, radius: 18)),
+            SizedBox(width: 12),
+            Expanded(child: Skeleton(height: 64, radius: 18)),
+            SizedBox(width: 12),
+            Expanded(child: Skeleton(height: 64, radius: 18)),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+/// Extras tab placeholder: two section-card bubbles.
+Widget extrasSkeleton() {
+  return Shimmer(
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+      children: const [
+        Skeleton(height: 160, radius: 24),
+        SizedBox(height: 16),
+        Skeleton(height: 130, radius: 24),
+      ],
+    ),
+  );
+}
+
+/// Settings tab placeholder: three section-card bubbles (theme, logs, sign
+/// out).
+Widget settingsSkeleton() {
+  return Shimmer(
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+      children: const [
+        Skeleton(height: 150, radius: 24),
+        SizedBox(height: 16),
+        Skeleton(height: 110, radius: 24),
+        SizedBox(height: 16),
+        Skeleton(height: 110, radius: 24),
+      ],
+    ),
+  );
+}
+

@@ -231,7 +231,7 @@ class _Brandmark extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          "Your campus balance, at a glance",
+          "It's (un)official!",
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 15, color: scheme.onSurfaceVariant),
         ),

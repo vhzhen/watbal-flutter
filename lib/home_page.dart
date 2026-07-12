@@ -106,7 +106,7 @@ class _HomePageState extends State<HomePage> {
             onTap: (i) => setState(() => _navIndex = i),
           ),
           body: switch (_navIndex) {
-            1 => const _AnalyticsView(),
+            1 => _AnalyticsView(data: _data),
             2 => _ExtrasView(
                 accounts: _data.accounts,
                 onMealPlanChanged: _data.reloadMealPlan,
@@ -127,6 +127,8 @@ class _HomePageState extends State<HomePage> {
   Widget _dashboard(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final accounts = _data.accounts;
+    // First load (no cached transactions yet) → skeleton the whole tab.
+    if (_data.txns == null && _data.error == null) return dashboardSkeleton();
     return RefreshIndicator(
       onRefresh: _data.refresh,
       child: ListView(
@@ -207,10 +209,24 @@ class _HomeController extends ChangeNotifier {
   void syncAccounts(List<AccountBalance> value) => _accounts = value;
 
   List<Transaction>? _txns;
+  /// All transactions across every account (null while the first load is in
+  /// flight). Used by the Analytics tab.
+  List<Transaction>? get txns => _txns;
+
   Map<String, String> _balanceIds = const {};
   DateTime updated = DateTime.now();
   bool refreshing = false;
   String? error;
+
+  /// Sum of every account's current balance, in dollars (accounts that don't
+  /// parse are skipped). The anchor for reconstructing balance history.
+  double get totalBalance {
+    var sum = 0.0;
+    for (final a in _accounts) {
+      sum += a.amountValue ?? 0;
+    }
+    return sum;
+  }
 
   MealPlanConfig mealPlan = const MealPlanConfig();
 
@@ -763,6 +779,7 @@ class _MealPlanCard extends StatelessWidget {
           else
             _AllowanceHeadline(pacing: pacing, end: end, scheme: scheme),
           const SizedBox(height: 16),
+          // Time bar: percentage of the term's days gone by; full = final day.
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
@@ -1240,28 +1257,421 @@ class _TxnTile extends StatelessWidget {
 
 // ────────────────────────────── analytics tab ──────────────────────────────
 
-/// Tab 1: intentionally blank for now — a placeholder until analytics land.
+/// Tab 1: spending analytics across all accounts — a reconstructed
+/// balance-over-time line chart plus this-month spend vs. a typical month.
 class _AnalyticsView extends StatelessWidget {
-  const _AnalyticsView();
+  final _HomeController data;
+  const _AnalyticsView({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    final txns = data.txns;
+    if (txns == null) return analyticsSkeleton();
+
+    final a = _Analytics.from(txns, data.totalBalance);
+    if (a.isEmpty) {
+      final scheme = Theme.of(context).colorScheme;
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.query_stats_outlined,
+                size: 48, color: scheme.onSurfaceVariant),
+            const SizedBox(height: 12),
+            Text("No spending to analyze yet",
+                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15)),
+          ],
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+      children: [
+        _MonthSummaryCard(a: a),
+        const SizedBox(height: 16),
+        _BalanceTrendCard(a: a),
+      ],
+    );
+  }
+}
+
+/// Everything the Analytics tab renders, derived once from the transaction
+/// list plus the current total balance.
+class _Analytics {
+  /// (date, balance) after each transaction, oldest→newest, plus a final point
+  /// at "now" — the reconstructed balance curve.
+  final List<({DateTime date, double value})> balanceSeries;
+
+  final double thisMonthSpend;
+
+  /// Average monthly spend over the *completed* prior months (0 if none yet).
+  final double typicalMonthSpend;
+
+  final int thisMonthCount;
+
+  const _Analytics({
+    required this.balanceSeries,
+    required this.thisMonthSpend,
+    required this.typicalMonthSpend,
+    required this.thisMonthCount,
+  });
+
+  bool get isEmpty => balanceSeries.length < 2 && thisMonthSpend == 0;
+
+  factory _Analytics.from(List<Transaction> txns, double totalBalance) {
+    final now = DateTime.now();
+    final monthStart = DateTime(now.year, now.month, 1);
+
+    // Dated transactions, oldest first.
+    final dated = txns.where((t) => t.parsedDate != null).toList()
+      ..sort((x, y) => x.parsedDate!.compareTo(y.parsedDate!));
+
+    // Reconstruct balance history: current total is the balance after the most
+    // recent transaction; walk backwards undoing each one.
+    final series = <({DateTime date, double value})>[];
+    var running = totalBalance;
+    for (var i = dated.length - 1; i >= 0; i--) {
+      series.add((date: dated[i].parsedDate!, value: running));
+      running -= dated[i].amountValue; // balance just before this txn
+    }
+    final ordered = series.reversed.toList();
+    // Flat segment out to "now" (balance doesn't move without a transaction).
+    if (ordered.isNotEmpty) {
+      ordered.add((date: now, value: totalBalance));
+    }
+
+    // Spending aggregates (debits only; amountValue is negative for debits).
+    var thisMonthSpend = 0.0;
+    var thisMonthCount = 0;
+    final byMonth = <String, double>{};
+    for (final t in dated) {
+      if (!t.isDebit) continue;
+      final amt = -t.amountValue;
+      final d = t.parsedDate!;
+      final key = "${d.year}-${d.month}";
+      byMonth[key] = (byMonth[key] ?? 0) + amt;
+      if (!d.isBefore(monthStart)) {
+        thisMonthSpend += amt;
+        thisMonthCount++;
+      }
+    }
+
+    // Typical month = average of completed prior months (exclude this month).
+    final thisKey = "${now.year}-${now.month}";
+    final priorMonths =
+        byMonth.entries.where((e) => e.key != thisKey).toList();
+    final typicalMonth = priorMonths.isEmpty
+        ? 0.0
+        : priorMonths.fold(0.0, (s, e) => s + e.value) / priorMonths.length;
+
+    return _Analytics(
+      balanceSeries: ordered,
+      thisMonthSpend: thisMonthSpend,
+      typicalMonthSpend: typicalMonth,
+      thisMonthCount: thisMonthCount,
+    );
+  }
+}
+
+/// "This month you've spent $X" with a comparison to a typical month.
+class _MonthSummaryCard extends StatelessWidget {
+  final _Analytics a;
+  const _MonthSummaryCard({required this.a});
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Center(
+    final hasTypical = a.typicalMonthSpend > 0;
+    final diff = a.thisMonthSpend - a.typicalMonthSpend;
+    final up = diff > 0;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+      ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.analytics_outlined,
-              size: 48, color: scheme.onSurfaceVariant),
-          const SizedBox(height: 12),
+          Text("THIS MONTH YOU'VE SPENT",
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 1.1,
+                color: scheme.onSurfaceVariant,
+              )),
+          const SizedBox(height: 8),
           Text(
-            "Analytics coming soon",
-            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15),
+            _money(a.thisMonthSpend),
+            style: TextStyle(
+              fontSize: 40,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -1,
+              color: scheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (hasTypical)
+            Row(
+              children: [
+                Icon(up ? Icons.trending_up : Icons.trending_down,
+                    size: 16,
+                    color: up ? scheme.error : const Color(0xFF2E9E5B)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    "${_money(diff.abs())} ${up ? 'more' : 'less'} than a "
+                    "typical month (${_money(a.typicalMonthSpend)})",
+                    style: TextStyle(
+                        fontSize: 13, color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            )
+          else
+            Text(
+              "Across ${a.thisMonthCount} purchase"
+              "${a.thisMonthCount == 1 ? '' : 's'} this month",
+              style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The selectable window for the balance chart.
+enum _ChartSpan {
+  week(days: 7, label: "Week"),
+  month(days: 30, label: "Month"),
+  year(days: 365, label: "Year");
+
+  final int days;
+  final String label;
+  const _ChartSpan({required this.days, required this.label});
+}
+
+/// The reconstructed balance-over-time line chart in a titled card, with a
+/// Week / Month / Year span selector (default: last month) and labelled axes.
+class _BalanceTrendCard extends StatefulWidget {
+  final _Analytics a;
+  const _BalanceTrendCard({required this.a});
+
+  @override
+  State<_BalanceTrendCard> createState() => _BalanceTrendCardState();
+}
+
+class _BalanceTrendCardState extends State<_BalanceTrendCard> {
+  _ChartSpan _span = _ChartSpan.month;
+
+  /// The series clipped to the selected span. Balance is a step function, so
+  /// a synthetic point is prepended at the cutoff carrying the last value from
+  /// before it — the line always spans the full window, even for a quiet week.
+  List<({DateTime date, double value})> _windowed() {
+    final all = widget.a.balanceSeries;
+    final cutoff = DateTime.now().subtract(Duration(days: _span.days));
+    final inWindow = all.where((p) => p.date.isAfter(cutoff)).toList();
+    ({DateTime date, double value})? boundary;
+    for (final p in all) {
+      if (p.date.isAfter(cutoff)) break;
+      boundary = (date: cutoff, value: p.value);
+    }
+    return [?boundary, ...inWindow];
+  }
+
+  /// X-axis tick label, formatted for the span's granularity.
+  String _tick(DateTime d) => _span == _ChartSpan.year
+      ? _monthAbbr[d.month - 1]
+      : "${_monthAbbr[d.month - 1]} ${d.day}";
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    var pts = _windowed();
+    if (pts.length < 2) pts = widget.a.balanceSeries;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text("BALANCE OVER TIME",
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 1.1,
+                color: scheme.onSurfaceVariant,
+              )),
+          const SizedBox(height: 14),
+          if (pts.length < 2)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: Text("Not enough history yet",
+                    style: TextStyle(
+                        fontSize: 13, color: scheme.onSurfaceVariant)),
+              ),
+            )
+          else
+            SizedBox(
+              height: 190,
+              width: double.infinity,
+              child: CustomPaint(
+                painter: _LineChartPainter(
+                  points: pts,
+                  line: scheme.primary,
+                  fill: scheme.primary.withValues(alpha: 0.12),
+                  gridColor: scheme.onSurfaceVariant.withValues(alpha: 0.15),
+                  labelStyle: TextStyle(
+                    fontSize: 10,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  xTickLabel: _tick,
+                ),
+              ),
+            ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final s in _ChartSpan.values)
+                ChoiceChip(
+                  label: Text(s.label),
+                  selected: _span == s,
+                  onSelected: (_) => setState(() => _span = s),
+                ),
+            ],
           ),
         ],
       ),
     );
   }
+}
+
+/// A line chart with a soft fill, horizontal price gridlines (Y axis), and
+/// date ticks (X axis). Pure Flutter, no dependency.
+class _LineChartPainter extends CustomPainter {
+  final List<({DateTime date, double value})> points;
+  final Color line;
+  final Color fill;
+  final Color gridColor;
+  final TextStyle labelStyle;
+  final String Function(DateTime) xTickLabel;
+
+  _LineChartPainter({
+    required this.points,
+    required this.line,
+    required this.fill,
+    required this.gridColor,
+    required this.labelStyle,
+    required this.xTickLabel,
+  });
+
+  static const _yTicks = 4;
+  static const _xTicks = 4;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+
+    // Gutters reserved for axis labels.
+    const leftPad = 44.0, bottomPad = 18.0, topPad = 6.0, rightPad = 6.0;
+    final chart = Rect.fromLTRB(
+        leftPad, topPad, size.width - rightPad, size.height - bottomPad);
+
+    final minX = points.first.date.millisecondsSinceEpoch.toDouble();
+    final maxX = points.last.date.millisecondsSinceEpoch.toDouble();
+    var minY = points.first.value, maxY = points.first.value;
+    for (final p in points) {
+      if (p.value < minY) minY = p.value;
+      if (p.value > maxY) maxY = p.value;
+    }
+    // A flat line needs an artificial range to sit mid-chart.
+    if ((maxY - minY).abs() < 0.01) {
+      minY -= 1;
+      maxY += 1;
+    }
+    final spanX = (maxX - minX).abs() < 1 ? 1 : maxX - minX;
+    final spanY = maxY - minY;
+
+    Offset at(({DateTime date, double value}) p) => Offset(
+          chart.left +
+              (p.date.millisecondsSinceEpoch - minX) / spanX * chart.width,
+          chart.top + (1 - (p.value - minY) / spanY) * chart.height,
+        );
+
+    void drawLabel(String text, Offset center, {bool alignRight = false}) {
+      final tp = TextPainter(
+        text: TextSpan(text: text, style: labelStyle),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final dx = alignRight ? center.dx - tp.width : center.dx - tp.width / 2;
+      tp.paint(canvas, Offset(dx, center.dy - tp.height / 2));
+    }
+
+    String price(double v) =>
+        v.abs() >= 100 ? "\$${v.round()}" : "\$${v.toStringAsFixed(2)}";
+
+    // Y axis: horizontal gridlines with price labels in the left gutter.
+    final gridPaint = Paint()
+      ..color = gridColor
+      ..strokeWidth = 1;
+    for (var i = 0; i < _yTicks; i++) {
+      final f = i / (_yTicks - 1);
+      final v = maxY - f * spanY;
+      final y = chart.top + f * chart.height;
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), gridPaint);
+      drawLabel(price(v), Offset(chart.left - 6, y), alignRight: true);
+    }
+
+    // X axis: evenly spaced date ticks along the bottom.
+    for (var i = 0; i < _xTicks; i++) {
+      final f = i / (_xTicks - 1);
+      final ms = minX + f * spanX;
+      final d = DateTime.fromMillisecondsSinceEpoch(ms.round());
+      // Nudge the edge labels inward so they don't clip.
+      final x = (chart.left + f * chart.width)
+          .clamp(chart.left + 14, chart.right - 14);
+      drawLabel(xTickLabel(d), Offset(x, size.height - bottomPad / 2));
+    }
+
+    // The curve itself, clipped to the chart area.
+    canvas.save();
+    canvas.clipRect(chart.inflate(4));
+    final linePath = Path();
+    for (var i = 0; i < points.length; i++) {
+      final o = at(points[i]);
+      i == 0 ? linePath.moveTo(o.dx, o.dy) : linePath.lineTo(o.dx, o.dy);
+    }
+    final fillPath = Path.from(linePath)
+      ..lineTo(chart.right, chart.bottom)
+      ..lineTo(chart.left, chart.bottom)
+      ..close();
+    canvas.drawPath(fillPath, Paint()..color = fill);
+    canvas.drawPath(
+      linePath,
+      Paint()
+        ..color = line
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawCircle(at(points.last), 3.5, Paint()..color = line);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_LineChartPainter old) =>
+      old.points != points || old.line != line || old.fill != fill;
 }
 
 // ─────────────────────────────── extras tab ────────────────────────────────
@@ -1284,6 +1694,7 @@ class _ExtrasView extends StatefulWidget {
 
 class _ExtrasViewState extends State<_ExtrasView> {
   MealPlanConfig _mealPlan = const MealPlanConfig();
+  bool _loading = true;
 
   @override
   void initState() {
@@ -1293,7 +1704,12 @@ class _ExtrasViewState extends State<_ExtrasView> {
 
   Future<void> _loadMealPlan() async {
     final config = await MealPlanConfig.load();
-    if (mounted) setState(() => _mealPlan = config);
+    if (mounted) {
+      setState(() {
+        _mealPlan = config;
+        _loading = false;
+      });
+    }
   }
 
   Future<void> _setMealPlanAccount(String? name) async {
@@ -1334,24 +1750,62 @@ class _ExtrasViewState extends State<_ExtrasView> {
     widget.onMealPlanChanged();
   }
 
-  Widget _termDateRow(
+  /// A tappable date "input field". Unset dates get a primary-coloured border
+  /// and "Select date" prompt so it's obvious they're waiting to be filled in;
+  /// set dates show the value with a calendar icon, still clearly tappable.
+  Widget _termDateField(
     String label,
     DateTime? date,
     VoidCallback onTap,
     ColorScheme scheme,
   ) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
-      title: Text(label),
-      trailing: Text(
-        date == null ? "Set date" : _monthDayYear(date),
-        style: TextStyle(
-          color: date == null ? scheme.primary : scheme.onSurfaceVariant,
-          fontWeight: date == null ? FontWeight.w600 : FontWeight.normal,
+    final isSet = date != null;
+    final accent = isSet ? scheme.onSurfaceVariant : scheme.primary;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: isSet ? scheme.outlineVariant : scheme.primary,
+            width: isSet ? 1 : 1.5,
+          ),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(Icons.calendar_today_outlined, size: 15, color: accent),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    isSet ? _monthDayYear(date) : "Select date",
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: isSet ? scheme.onSurface : scheme.primary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
-      onTap: onTap,
     );
   }
 
@@ -1468,19 +1922,16 @@ class _ExtrasViewState extends State<_ExtrasView> {
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) return extrasSkeleton();
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-              Text("Meal plan",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: scheme.onSurfaceVariant,
-                  )),
-              const SizedBox(height: 4),
+        _SectionCard(
+          title: "MEAL PLAN",
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Text(
                 "Track one account as a meal plan to pace it down by term end.",
                 style:
@@ -1505,19 +1956,30 @@ class _ExtrasViewState extends State<_ExtrasView> {
                 ],
               ),
               if (_mealPlan.accountName != null) ...[
-                const SizedBox(height: 4),
-                _termDateRow("Term start", _mealPlan.start,
-                    () => _pickTermDate(true), scheme),
-                _termDateRow("Term end", _mealPlan.end,
-                    () => _pickTermDate(false), scheme),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _termDateField("Term start", _mealPlan.start,
+                          () => _pickTermDate(true), scheme),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _termDateField("Term end", _mealPlan.end,
+                          () => _pickTermDate(false), scheme),
+                    ),
+                  ],
+                ),
               ],
-              const SizedBox(height: 24),
-              Text("Card PIN",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: scheme.onSurfaceVariant,
-                  )),
-              const SizedBox(height: 4),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: "CARD PIN",
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Text(
                 "Set a new PIN for your WatCard.",
                 style:
@@ -1537,8 +1999,44 @@ class _ExtrasViewState extends State<_ExtrasView> {
               ),
             ],
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The analytics-style "bubble" every Extras/Settings subsection sits in:
+/// rounded surface card with an uppercase letter-spaced title.
+class _SectionCard extends StatelessWidget {
+  final String title;
+  final Widget child;
+  const _SectionCard({required this.title, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 1.1,
+                color: scheme.onSurfaceVariant,
+              )),
+          const SizedBox(height: 12),
+          child,
         ],
-      );
+      ),
+    );
   }
 }
 
@@ -1561,6 +2059,7 @@ class _SettingsView extends StatefulWidget {
 
 class _SettingsViewState extends State<_SettingsView> {
   String? _widgetAccount;
+  bool _loading = true;
 
   @override
   void initState() {
@@ -1573,6 +2072,7 @@ class _SettingsViewState extends State<_SettingsView> {
     final saved = prefs.getString(kWidgetAccountKey);
     if (!mounted) return;
     setState(() {
+      _loading = false;
       // Default to the first account when nothing is saved (or the saved one
       // no longer exists), matching what the scraper actually pushes.
       _widgetAccount = widget.accounts.any((a) => a.name == saved)
@@ -1592,102 +2092,86 @@ class _SettingsViewState extends State<_SettingsView> {
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) return settingsSkeleton();
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text("Theme",
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: scheme.onSurfaceVariant,
-                )),
-            const SizedBox(height: 16),
-            ListenableBuilder(
-              listenable: widget.theme,
-              builder: (context, _) => Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 16,
-                runSpacing: 16,
-                children: AppTheme.values
-                    .map((t) => _ThemeSwatch(
-                          option: t,
-                          selected: widget.theme.theme == t,
-                          onTap: () => widget.theme.set(t),
-                        ))
+        _SectionCard(
+          title: "THEME",
+          child: ListenableBuilder(
+            listenable: widget.theme,
+            builder: (context, _) => Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 16,
+              runSpacing: 16,
+              children: AppTheme.values
+                  .map((t) => _ThemeSwatch(
+                        option: t,
+                        selected: widget.theme.theme == t,
+                        onTap: () => widget.theme.set(t),
+                      ))
+                  .toList(),
+            ),
+          ),
+        ),
+        if (widget.accounts.length > 1) ...[
+          const SizedBox(height: 16),
+          _SectionCard(
+            title: "WIDGET ACCOUNT",
+            child: RadioGroup<String>(
+              groupValue: _widgetAccount,
+              onChanged: (v) {
+                if (v != null) _selectWidgetAccount(v);
+              },
+              child: Column(
+                children: widget.accounts
+                    .map(
+                      (a) => RadioListTile<String>(
+                        value: a.name,
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: Text(a.displayName),
+                        secondary: Text(
+                          a.amount,
+                          style: TextStyle(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                    )
                     .toList(),
               ),
             ),
-            if (widget.accounts.length > 1) ...[
-              const SizedBox(height: 24),
-              Text("Widget account",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: scheme.onSurfaceVariant,
-                  )),
-              const SizedBox(height: 4),
-              RadioGroup<String>(
-                groupValue: _widgetAccount,
-                onChanged: (v) {
-                  if (v != null) _selectWidgetAccount(v);
-                },
-                child: Column(
-                  children: widget.accounts
-                      .map(
-                        (a) => RadioListTile<String>(
-                          value: a.name,
-                          contentPadding: EdgeInsets.zero,
-                          dense: true,
-                          title: Text(a.displayName),
-                          secondary: Text(
-                            a.amount,
-                            style: TextStyle(color: scheme.onSurfaceVariant),
-                          ),
-                        ),
-                      )
-                      .toList(),
-                ),
-              ),
-            ],
-            const SizedBox(height: 24),
-            Text("Logs",
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: scheme.onSurfaceVariant,
-                )),
-            const SizedBox(height: 10),
+          ),
+        ],
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: "LOGS",
+          child: Align(
+            alignment: Alignment.centerLeft,
             // Bordered chip matching the "None" meal-plan chip.
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ChoiceChip(
-                label: const Text("View logs"),
-                selected: false,
-                onSelected: (_) => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const LogViewerPage()),
-                ),
+            child: ChoiceChip(
+              label: const Text("View logs"),
+              selected: false,
+              onSelected: (_) => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const LogViewerPage()),
               ),
             ),
-            const SizedBox(height: 24),
-            Text("Sign Out",
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: scheme.onSurfaceVariant,
-                )),
-            const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ChoiceChip(
-                label: const Text("Sign out"),
-                selected: false,
-                onSelected: (_) async {
-                  await clearSession();
-                  widget.onSignedOut();
-                },
-              ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: "SIGN OUT",
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: ChoiceChip(
+              label: const Text("Sign out"),
+              selected: false,
+              onSelected: (_) async {
+                await clearSession();
+                widget.onSignedOut();
+              },
             ),
-          ],
+          ),
         ),
       ],
     );

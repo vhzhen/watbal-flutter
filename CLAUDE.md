@@ -134,6 +134,27 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
 Extras/Settings are plain scrollable tab bodies (formerly modal dialogs); the
 AppBar title tracks the tab and has no action icons.
 
+**Analytics tab** (`_AnalyticsView` + `_Analytics.from`): all-account spending
+insights derived from the transaction cache. A **balance-over-time line chart**
+(`_LineChartPainter`, pure-Flutter `CustomPaint`) is reconstructed by taking the
+current total balance and walking transactions backwards (`balance_before =
+balance_after − amountValue`, since debit `amountValue` is negative). The chart
+has labelled axes (price gridlines on Y; 4 date ticks on X, month-only labels
+for the year span) and a Week/Month/Year span selector (`_ChartSpan`, default
+Month); a synthetic point is prepended at the window cutoff so the step-function
+line always spans the full window. Plus a "this month you've spent $X" card
+comparing to a **typical month** (average of completed prior months).
+
+**Section cards**: every Extras/Settings subsection (Meal plan, Card PIN,
+Theme, Widget account, Logs, Sign out) sits in a `_SectionCard` — the
+analytics-style bubble (surfaceContainerHighest, radius 24, uppercase
+letter-spaced title) — for cross-tab consistency.
+
+**Skeletons per tab**: each tab shows a shimmer placeholder while its data
+loads — `dashboardSkeleton`/`analyticsSkeleton` gate on `_data.txns == null`
+(first load, before cache), `extrasSkeleton`/`settingsSkeleton` on the view's
+own `_loading` flag (prefs read). All in `skeletons.dart`.
+
 ## Change card PIN
 
 Extras → "Change card PIN" opens a two-field popup (New / Re-enter, must

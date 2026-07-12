@@ -131,7 +131,8 @@ class MealPlanPacing {
   /// Recent average daily spend on this account (trailing window).
   final double recentDailyPace;
 
-  /// Fraction of the term elapsed (0–1), for a progress bar.
+  /// Fraction of the term's days gone by (0–1), for the progress bar: 0 = term
+  /// start, 1 = the final day has arrived.
   final double termElapsedFraction;
 
   final MealPlanStatus status;
