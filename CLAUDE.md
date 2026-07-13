@@ -134,8 +134,11 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
 Extras/Settings are plain scrollable tab bodies (formerly modal dialogs); the
 AppBar title tracks the tab and has no action icons.
 
-**Analytics tab** (`_AnalyticsView` + `_Analytics.from`): all-account spending
-insights derived from the transaction cache. A **balance-over-time line chart**
+**Analytics tab** (`_AnalyticsView` + `_Analytics.from`): spending insights
+derived from the transaction cache, scoped by an account filter at the top —
+"All accounts" (default, totals summed) or any single account (chips hidden
+with one account; a selection that disappears after a refresh falls back to
+all). The whole tab recomputes per filter, and the chart re-keys so it redraws. A **balance-over-time line chart**
 (`_LineChartPainter`, pure-Flutter `CustomPaint`) is reconstructed by taking the
 current total balance and walking transactions backwards (`balance_before =
 balance_after − amountValue`, since debit `amountValue` is negative). The chart
@@ -143,7 +146,9 @@ has labelled axes (price gridlines on Y; 4 date ticks on X, month-only labels
 for the year span) and a Week/Month/Year span selector (`_ChartSpan`, default
 Month); a synthetic point is prepended at the window cutoff so the step-function
 line always spans the full window. Plus a "this month you've spent $X" card
-comparing to a **typical month** (average of completed prior months).
+comparing to the **past-year monthly average** (spend over the last 12
+completed months ÷ months spanned — clamped to when the data starts, so
+zero-spend months count but a short history isn't diluted).
 
 **Section cards**: every Extras/Settings subsection (Meal plan, Card PIN,
 Theme, Widget account, Logs, Sign out) sits in a `_SectionCard` — the
@@ -154,6 +159,18 @@ letter-spaced title) — for cross-tab consistency.
 loads — `dashboardSkeleton`/`analyticsSkeleton` gate on `_data.txns == null`
 (first load, before cache), `extrasSkeleton`/`settingsSkeleton` on the view's
 own `_loading` flag (prefs read). All in `skeletons.dart`.
+
+**Micro-animations** (all implicit/one-shot, no controllers): tab bodies swap
+via `AnimatedSwitcher` (220ms fade + tiny upward drift; key includes the
+loading flag so skeleton→content also fades); the selected nav pill pops in
+with `easeOutBack` (only the *new* pill animates — the old one vanishes
+instantly, deliberate: an exit fade reads as a flash); hero cards compress to
+0.98 while pressed (`AnimatedScale` + `InkWell.onHighlightChanged`); the hero
+balance counts up/down on change (`_AnimatedAmount`, TweenAnimationBuilder —
+no animation on first render since begin == end); the meal-plan time bar eases
+to its value; the analytics line chart draws itself left-to-right via
+`PathMetric.extractPath` (`progress` on `_LineChartPainter`, re-keyed per
+span).
 
 ## Change card PIN
 

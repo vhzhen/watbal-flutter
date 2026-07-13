@@ -79,10 +79,7 @@ class _HomePageState extends State<HomePage> {
   void _openAccount(AccountBalance account) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => _AccountDetailPage(
-          data: _data,
-          account: account,
-        ),
+        builder: (_) => _AccountDetailPage(data: _data, account: account),
       ),
     );
   }
@@ -105,19 +102,39 @@ class _HomePageState extends State<HomePage> {
             currentIndex: _navIndex,
             onTap: (i) => setState(() => _navIndex = i),
           ),
-          body: switch (_navIndex) {
-            1 => _AnalyticsView(data: _data),
-            2 => _ExtrasView(
-                accounts: _data.accounts,
-                onMealPlanChanged: _data.reloadMealPlan,
+          // Micro-animation: tab switches (and skeleton → content on the
+          // data-driven tabs) fade in with a slight upward drift.
+          body: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, anim) => FadeTransition(
+              opacity: anim,
+              child: SlideTransition(
+                position: Tween(
+                  begin: const Offset(0, 0.01),
+                  end: Offset.zero,
+                ).animate(anim),
+                child: child,
               ),
-            3 => _SettingsView(
-                theme: widget.theme,
-                accounts: _data.accounts,
-                onSignedOut: _signOut,
-              ),
-            _ => _dashboard(context),
-          },
+            ),
+            child: KeyedSubtree(
+              key: ValueKey("$_navIndex-${_data.txns == null}"),
+              child: switch (_navIndex) {
+                1 => _AnalyticsView(data: _data),
+                2 => _ExtrasView(
+                  accounts: _data.accounts,
+                  onMealPlanChanged: _data.reloadMealPlan,
+                ),
+                3 => _SettingsView(
+                  theme: widget.theme,
+                  accounts: _data.accounts,
+                  onSignedOut: _signOut,
+                ),
+                _ => _dashboard(context),
+              },
+            ),
+          ),
         );
       },
     );
@@ -209,6 +226,7 @@ class _HomeController extends ChangeNotifier {
   void syncAccounts(List<AccountBalance> value) => _accounts = value;
 
   List<Transaction>? _txns;
+
   /// All transactions across every account (null while the first load is in
   /// flight). Used by the Analytics tab.
   List<Transaction>? get txns => _txns;
@@ -345,9 +363,9 @@ class _HomeController extends ChangeNotifier {
   /// a detail page can't hold onto its constructor copy), falling back to the
   /// stale copy if the account vanished from the latest scrape.
   AccountBalance current(AccountBalance account) => _accounts.firstWhere(
-        (a) => a.name == account.name,
-        orElse: () => account,
-      );
+    (a) => a.name == account.name,
+    orElse: () => account,
+  );
 
   /// Transactions attributed to [account]. Null while the first fetch is in
   /// flight (loading), empty when loaded-but-none.
@@ -381,10 +399,7 @@ class _AccountDetailPage extends StatefulWidget {
   final _HomeController data;
   final AccountBalance account;
 
-  const _AccountDetailPage({
-    required this.data,
-    required this.account,
-  });
+  const _AccountDetailPage({required this.data, required this.account});
 
   @override
   State<_AccountDetailPage> createState() => _AccountDetailPageState();
@@ -488,8 +503,11 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
 
   Widget _summary(List<Transaction>? txns) {
     final now = DateTime.now();
-    final weekStart = DateTime(now.year, now.month, now.day)
-        .subtract(Duration(days: now.weekday - 1));
+    final weekStart = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: now.weekday - 1));
     final monthStart = DateTime(now.year, now.month, 1);
     final loaded = txns ?? const <Transaction>[];
     return Padding(
@@ -573,31 +591,28 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
       SliverPadding(
         padding: const EdgeInsets.fromLTRB(16, 6, 16, 40),
         sliver: SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, i) {
-              final row = rows[i];
-              if (row is String) return _DateHeader(label: row);
-              return _TxnTile(t: row as Transaction);
-            },
-            childCount: rows.length,
-          ),
+          delegate: SliverChildBuilderDelegate((context, i) {
+            final row = rows[i];
+            if (row is String) return _DateHeader(label: row);
+            return _TxnTile(t: row as Transaction);
+          }, childCount: rows.length),
         ),
       ),
     ];
   }
 
   Widget _message(ColorScheme scheme, String text) => SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
-          child: Center(
-            child: Text(
-              text,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: scheme.onSurfaceVariant),
-            ),
-          ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
+      child: Center(
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: scheme.onSurfaceVariant),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 // ───────────────────────────── meal-plan dashboard ─────────────────────────
@@ -642,10 +657,7 @@ class _MealPlanSection extends StatelessWidget {
         );
       }
     }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
-      child: card,
-    );
+    return Padding(padding: const EdgeInsets.only(bottom: 20), child: card);
   }
 }
 
@@ -676,8 +688,11 @@ class _MealPlanSetupCard extends StatelessWidget {
                   color: scheme.primaryContainer,
                   borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(Icons.insights_rounded,
-                    color: scheme.onPrimaryContainer, size: 24),
+                child: Icon(
+                  Icons.insights_rounded,
+                  color: scheme.onPrimaryContainer,
+                  size: 24,
+                ),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -780,13 +795,19 @@ class _MealPlanCard extends StatelessWidget {
             _AllowanceHeadline(pacing: pacing, end: end, scheme: scheme),
           const SizedBox(height: 16),
           // Time bar: percentage of the term's days gone by; full = final day.
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: pacing.termElapsedFraction,
-              minHeight: 6,
-              backgroundColor: scheme.surface,
-              valueColor: AlwaysStoppedAnimation(scheme.primary),
+          // Micro-animation: eases from empty to its value on appearance.
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: pacing.termElapsedFraction),
+            duration: const Duration(milliseconds: 700),
+            curve: Curves.easeOutCubic,
+            builder: (_, v, _) => ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: v,
+                minHeight: 6,
+                backgroundColor: scheme.surface,
+                valueColor: AlwaysStoppedAnimation(scheme.primary),
+              ),
             ),
           ),
           const SizedBox(height: 8),
@@ -794,7 +815,7 @@ class _MealPlanCard extends StatelessWidget {
             ended
                 ? "${_money(pacing.balance)} left over"
                 : "${_money(pacing.balance)} left · "
-                    "${pacing.daysRemaining} day${pacing.daysRemaining == 1 ? '' : 's'} remaining",
+                      "${pacing.daysRemaining} day${pacing.daysRemaining == 1 ? '' : 's'} remaining",
             style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
           ),
         ],
@@ -913,8 +934,9 @@ class _StatusPill extends StatelessWidget {
 
 /// The balance hero. In the all-accounts menu it's tappable (chevron +
 /// transaction count as the affordance); on the detail page it's static and
-/// [trailing] is the "Updated …" pill.
-class _HeroCard extends StatelessWidget {
+/// [trailing] is the "Updated …" pill. Micro-animations: the card compresses
+/// slightly while pressed, and the balance counts up/down when it changes.
+class _HeroCard extends StatefulWidget {
   final AccountBalance account;
   final Widget? trailing;
   final String? caption;
@@ -928,86 +950,156 @@ class _HeroCard extends StatelessWidget {
   });
 
   @override
+  State<_HeroCard> createState() => _HeroCardState();
+}
+
+class _HeroCardState extends State<_HeroCard> {
+  bool _pressed = false;
+
+  AccountBalance get account => widget.account;
+  VoidCallback? get onTap => widget.onTap;
+  Widget? get trailing => widget.trailing;
+  String? get caption => widget.caption;
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final onContainer = scheme.onPrimaryContainer;
-    return Material(
-      color: scheme.primaryContainer,
-      borderRadius: BorderRadius.circular(28),
-      child: InkWell(
-        onTap: onTap,
+    return AnimatedScale(
+      scale: _pressed ? 0.98 : 1,
+      duration: const Duration(milliseconds: 120),
+      curve: Curves.easeOut,
+      child: Material(
+        color: scheme.primaryContainer,
         borderRadius: BorderRadius.circular(28),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      account.displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: onContainer.withValues(alpha: 0.7),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 1.4,
+        child: InkWell(
+          onTap: onTap,
+          onHighlightChanged: onTap == null
+              ? null
+              : (v) => setState(() => _pressed = v),
+          borderRadius: BorderRadius.circular(28),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        account.displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: onContainer.withValues(alpha: 0.7),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 1.4,
+                        ),
                       ),
                     ),
-                  ),
-                  ?trailing,
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: Text(
-                      account.amount,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 52,
-                        fontWeight: FontWeight.w800,
-                        color: onContainer,
-                        letterSpacing: -1.5,
-                      ),
-                    ),
-                  ),
-                  if (onTap != null) ...[
-                    const SizedBox(width: 12),
-                    Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: onContainer.withValues(alpha: 0.10),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.chevron_right,
-                        color: onContainer.withValues(alpha: 0.8),
-                        size: 22,
-                      ),
-                    ),
+                    ?trailing,
                   ],
-                ],
-              ),
-              if (caption != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  caption!,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: onContainer.withValues(alpha: 0.7),
-                  ),
                 ),
+                const SizedBox(height: 12),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: _AnimatedAmount(
+                        amount: account.amount,
+                        style: TextStyle(
+                          fontSize: 52,
+                          fontWeight: FontWeight.w800,
+                          color: onContainer,
+                          letterSpacing: -1.5,
+                        ),
+                      ),
+                    ),
+                    if (onTap != null) ...[
+                      const SizedBox(width: 12),
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: onContainer.withValues(alpha: 0.10),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.chevron_right,
+                          color: onContainer.withValues(alpha: 0.8),
+                          size: 22,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (caption != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    caption!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: onContainer.withValues(alpha: 0.7),
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A dollar amount that counts up/down to its new value when the underlying
+/// balance changes (no animation on first appearance). Falls back to the raw
+/// scraped string when it doesn't parse.
+class _AnimatedAmount extends StatelessWidget {
+  final String amount;
+  final TextStyle style;
+
+  const _AnimatedAmount({required this.amount, required this.style});
+
+  /// "$1234.56" with thousands separators → "$1,234.56".
+  static String _grouped(double v) {
+    final s = v.toStringAsFixed(2);
+    final neg = s.startsWith('-');
+    final digits = neg ? s.substring(1) : s;
+    final dot = digits.indexOf('.');
+    final whole = digits.substring(0, dot);
+    final buf = StringBuffer();
+    for (var i = 0; i < whole.length; i++) {
+      if (i > 0 && (whole.length - i) % 3 == 0) buf.write(',');
+      buf.write(whole[i]);
+    }
+    return "${neg ? '-' : ''}\$$buf${digits.substring(dot)}";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = double.tryParse(amount.replaceAll(RegExp(r'[^0-9.\-]'), ''));
+    if (value == null) {
+      return Text(
+        amount,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      );
+    }
+    // TweenAnimationBuilder animates from its *current* value whenever the
+    // tween's end changes — so a refresh that moves the balance counts toward
+    // the new number, while the first build renders it immediately.
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: value, end: value),
+      duration: const Duration(milliseconds: 650),
+      curve: Curves.easeOutCubic,
+      builder: (_, v, _) => Text(
+        _grouped(v),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
       ),
     );
   }
@@ -1030,7 +1122,9 @@ class _UpdatedPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final base = onSurface ? scheme.onSurfaceVariant : scheme.onPrimaryContainer;
+    final base = onSurface
+        ? scheme.onSurfaceVariant
+        : scheme.onPrimaryContainer;
     final fg = base.withValues(alpha: onSurface ? 1.0 : 0.8);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -1054,8 +1148,10 @@ class _UpdatedPill extends StatelessWidget {
           ] else ...[
             Icon(Icons.schedule, size: 12, color: fg),
             const SizedBox(width: 5),
-            Text("Updated ${_relative(updated)}",
-                style: TextStyle(fontSize: 11, color: fg)),
+            Text(
+              "Updated ${_relative(updated)}",
+              style: TextStyle(fontSize: 11, color: fg),
+            ),
           ],
         ],
       ),
@@ -1068,8 +1164,18 @@ class _UpdatedPill extends StatelessWidget {
 String _money(double v) => "\$${v.toStringAsFixed(2)}";
 
 const List<String> _monthAbbr = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
 ];
 
 /// "Apr 20, 2027" — always includes the year (used for term dates).
@@ -1087,8 +1193,18 @@ String _dayLabel(DateTime? d) {
   if (diff == 1) return "Yesterday";
   const wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const mo = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
   final base = "${wd[day.weekday - 1]}, ${mo[day.month - 1]} ${day.day}";
   return day.year == today.year ? base : "$base, ${day.year}";
@@ -1219,7 +1335,9 @@ class _TxnTile extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontWeight: FontWeight.w600, fontSize: 15),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 15,
+                  ),
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -1257,40 +1375,92 @@ class _TxnTile extends StatelessWidget {
 
 // ────────────────────────────── analytics tab ──────────────────────────────
 
-/// Tab 1: spending analytics across all accounts — a reconstructed
-/// balance-over-time line chart plus this-month spend vs. a typical month.
-class _AnalyticsView extends StatelessWidget {
+/// Tab 1: spending analytics — a reconstructed balance-over-time line chart
+/// plus this-month spend vs. the past-year monthly average. An account filter
+/// scopes the whole tab to one account or all of them (the default).
+class _AnalyticsView extends StatefulWidget {
   final _HomeController data;
   const _AnalyticsView({required this.data});
 
   @override
+  State<_AnalyticsView> createState() => _AnalyticsViewState();
+}
+
+class _AnalyticsViewState extends State<_AnalyticsView> {
+  /// Raw name of the account the tab is scoped to; null = all accounts.
+  String? _account;
+
+  @override
   Widget build(BuildContext context) {
+    final data = widget.data;
     final txns = data.txns;
     if (txns == null) return analyticsSkeleton();
 
-    final a = _Analytics.from(txns, data.totalBalance);
-    if (a.isEmpty) {
-      final scheme = Theme.of(context).colorScheme;
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.query_stats_outlined,
-                size: 48, color: scheme.onSurfaceVariant),
-            const SizedBox(height: 12),
-            Text("No spending to analyze yet",
-                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15)),
-          ],
-        ),
-      );
+    final scheme = Theme.of(context).colorScheme;
+    final accounts = data.accounts;
+
+    // Resolve the selection against the current account list (it may have
+    // changed across a refresh); an account that vanished falls back to "all".
+    AccountBalance? selected;
+    for (final acc in accounts) {
+      if (acc.name == _account) selected = acc;
     }
+
+    final filteredTxns =
+        selected == null ? txns : (data.txnsFor(selected) ?? const []);
+    final balance =
+        selected == null ? data.totalBalance : (selected.amountValue ?? 0);
+    final a = _Analytics.from(filteredTxns, balance);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
       children: [
-        _MonthSummaryCard(a: a),
-        const SizedBox(height: 16),
-        _BalanceTrendCard(a: a),
+        if (accounts.length > 1) ...[
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text("All accounts"),
+                selected: selected == null,
+                onSelected: (_) => setState(() => _account = null),
+              ),
+              for (final acc in accounts)
+                ChoiceChip(
+                  label: Text(acc.displayName),
+                  selected: selected?.name == acc.name,
+                  onSelected: (_) => setState(() => _account = acc.name),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (a.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 64),
+            child: Column(
+              children: [
+                Icon(
+                  Icons.query_stats_outlined,
+                  size: 48,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  "No spending to analyze yet",
+                  style:
+                      TextStyle(color: scheme.onSurfaceVariant, fontSize: 15),
+                ),
+              ],
+            ),
+          )
+        else ...[
+          _MonthSummaryCard(a: a),
+          const SizedBox(height: 16),
+          // Keyed on the filter so switching accounts re-runs the chart's
+          // draw-in animation with the new curve.
+          _BalanceTrendCard(key: ValueKey(_account), a: a),
+        ],
       ],
     );
   }
@@ -1305,7 +1475,7 @@ class _Analytics {
 
   final double thisMonthSpend;
 
-  /// Average monthly spend over the *completed* prior months (0 if none yet).
+  /// Average monthly spend over the past year's completed months (0 if none).
   final double typicalMonthSpend;
 
   final int thisMonthCount;
@@ -1344,26 +1514,31 @@ class _Analytics {
     // Spending aggregates (debits only; amountValue is negative for debits).
     var thisMonthSpend = 0.0;
     var thisMonthCount = 0;
-    final byMonth = <String, double>{};
+    final yearStart = DateTime(now.year - 1, now.month, 1);
+    var pastYearSpend = 0.0;
+    DateTime? firstDebitMonth;
     for (final t in dated) {
       if (!t.isDebit) continue;
       final amt = -t.amountValue;
       final d = t.parsedDate!;
-      final key = "${d.year}-${d.month}";
-      byMonth[key] = (byMonth[key] ?? 0) + amt;
+      firstDebitMonth ??= DateTime(d.year, d.month, 1);
       if (!d.isBefore(monthStart)) {
         thisMonthSpend += amt;
         thisMonthCount++;
+      } else if (!d.isBefore(yearStart)) {
+        pastYearSpend += amt;
       }
     }
 
-    // Typical month = average of completed prior months (exclude this month).
-    final thisKey = "${now.year}-${now.month}";
-    final priorMonths =
-        byMonth.entries.where((e) => e.key != thisKey).toList();
-    final typicalMonth = priorMonths.isEmpty
-        ? 0.0
-        : priorMonths.fold(0.0, (s, e) => s + e.value) / priorMonths.length;
+    // Typical month = average monthly spend over the past year's completed
+    // months (zero-spend months count; a shorter history isn't diluted).
+    var typicalMonth = 0.0;
+    if (firstDebitMonth != null) {
+      final from = firstDebitMonth.isAfter(yearStart) ? firstDebitMonth : yearStart;
+      final monthsSpanned =
+          (monthStart.year - from.year) * 12 + monthStart.month - from.month;
+      if (monthsSpanned > 0) typicalMonth = pastYearSpend / monthsSpanned;
+    }
 
     return _Analytics(
       balanceSeries: ordered,
@@ -1374,7 +1549,8 @@ class _Analytics {
   }
 }
 
-/// "This month you've spent $X" with a comparison to a typical month.
+/// "This month you've spent $X" with a comparison to the past-year monthly
+/// average.
 class _MonthSummaryCard extends StatelessWidget {
   final _Analytics a;
   const _MonthSummaryCard({required this.a});
@@ -1396,13 +1572,15 @@ class _MonthSummaryCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("THIS MONTH YOU'VE SPENT",
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.1,
-                color: scheme.onSurfaceVariant,
-              )),
+          Text(
+            "THIS MONTH YOU'VE SPENT",
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1.1,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(height: 8),
           Text(
             _money(a.thisMonthSpend),
@@ -1417,16 +1595,20 @@ class _MonthSummaryCard extends StatelessWidget {
           if (hasTypical)
             Row(
               children: [
-                Icon(up ? Icons.trending_up : Icons.trending_down,
-                    size: 16,
-                    color: up ? scheme.error : const Color(0xFF2E9E5B)),
+                Icon(
+                  up ? Icons.trending_up : Icons.trending_down,
+                  size: 16,
+                  color: up ? scheme.error : const Color(0xFF2E9E5B),
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    "${_money(diff.abs())} ${up ? 'more' : 'less'} than a "
-                    "typical month (${_money(a.typicalMonthSpend)})",
+                    "${_money(diff.abs())} ${up ? 'more' : 'less'} than your "
+                    "past-year monthly average (${_money(a.typicalMonthSpend)})",
                     style: TextStyle(
-                        fontSize: 13, color: scheme.onSurfaceVariant),
+                      fontSize: 13,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
               ],
@@ -1458,7 +1640,7 @@ enum _ChartSpan {
 /// Week / Month / Year span selector (default: last month) and labelled axes.
 class _BalanceTrendCard extends StatefulWidget {
   final _Analytics a;
-  const _BalanceTrendCard({required this.a});
+  const _BalanceTrendCard({super.key, required this.a});
 
   @override
   State<_BalanceTrendCard> createState() => _BalanceTrendCardState();
@@ -1503,38 +1685,53 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("BALANCE OVER TIME",
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.1,
-                color: scheme.onSurfaceVariant,
-              )),
+          Text(
+            "BALANCE OVER TIME",
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1.1,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(height: 14),
           if (pts.length < 2)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 32),
               child: Center(
-                child: Text("Not enough history yet",
-                    style: TextStyle(
-                        fontSize: 13, color: scheme.onSurfaceVariant)),
+                child: Text(
+                  "Not enough history yet",
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
               ),
             )
           else
             SizedBox(
               height: 190,
               width: double.infinity,
-              child: CustomPaint(
-                painter: _LineChartPainter(
-                  points: pts,
-                  line: scheme.primary,
-                  fill: scheme.primary.withValues(alpha: 0.12),
-                  gridColor: scheme.onSurfaceVariant.withValues(alpha: 0.15),
-                  labelStyle: TextStyle(
-                    fontSize: 10,
-                    color: scheme.onSurfaceVariant,
+              // Micro-animation: the line draws itself left-to-right when the
+              // chart appears or the span changes (keyed on the span).
+              child: TweenAnimationBuilder<double>(
+                key: ValueKey(_span),
+                tween: Tween(begin: 0, end: 1),
+                duration: const Duration(milliseconds: 700),
+                curve: Curves.easeOutCubic,
+                builder: (_, progress, _) => CustomPaint(
+                  painter: _LineChartPainter(
+                    points: pts,
+                    line: scheme.primary,
+                    fill: scheme.primary.withValues(alpha: 0.12),
+                    gridColor: scheme.onSurfaceVariant.withValues(alpha: 0.15),
+                    labelStyle: TextStyle(
+                      fontSize: 10,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    xTickLabel: _tick,
+                    progress: progress,
                   ),
-                  xTickLabel: _tick,
                 ),
               ),
             ),
@@ -1566,6 +1763,10 @@ class _LineChartPainter extends CustomPainter {
   final TextStyle labelStyle;
   final String Function(DateTime) xTickLabel;
 
+  /// Draw-in progress (0–1): the curve is trimmed to this fraction of its
+  /// length so it draws itself left-to-right. Axes render fully regardless.
+  final double progress;
+
   _LineChartPainter({
     required this.points,
     required this.line,
@@ -1573,6 +1774,7 @@ class _LineChartPainter extends CustomPainter {
     required this.gridColor,
     required this.labelStyle,
     required this.xTickLabel,
+    this.progress = 1,
   });
 
   static const _yTicks = 4;
@@ -1585,7 +1787,11 @@ class _LineChartPainter extends CustomPainter {
     // Gutters reserved for axis labels.
     const leftPad = 44.0, bottomPad = 18.0, topPad = 6.0, rightPad = 6.0;
     final chart = Rect.fromLTRB(
-        leftPad, topPad, size.width - rightPad, size.height - bottomPad);
+      leftPad,
+      topPad,
+      size.width - rightPad,
+      size.height - bottomPad,
+    );
 
     final minX = points.first.date.millisecondsSinceEpoch.toDouble();
     final maxX = points.last.date.millisecondsSinceEpoch.toDouble();
@@ -1603,10 +1809,9 @@ class _LineChartPainter extends CustomPainter {
     final spanY = maxY - minY;
 
     Offset at(({DateTime date, double value}) p) => Offset(
-          chart.left +
-              (p.date.millisecondsSinceEpoch - minX) / spanX * chart.width,
-          chart.top + (1 - (p.value - minY) / spanY) * chart.height,
-        );
+      chart.left + (p.date.millisecondsSinceEpoch - minX) / spanX * chart.width,
+      chart.top + (1 - (p.value - minY) / spanY) * chart.height,
+    );
 
     void drawLabel(String text, Offset center, {bool alignRight = false}) {
       final tp = TextPainter(
@@ -1638,21 +1843,40 @@ class _LineChartPainter extends CustomPainter {
       final ms = minX + f * spanX;
       final d = DateTime.fromMillisecondsSinceEpoch(ms.round());
       // Nudge the edge labels inward so they don't clip.
-      final x = (chart.left + f * chart.width)
-          .clamp(chart.left + 14, chart.right - 14);
+      final x = (chart.left + f * chart.width).clamp(
+        chart.left + 14,
+        chart.right - 14,
+      );
       drawLabel(xTickLabel(d), Offset(x, size.height - bottomPad / 2));
     }
 
-    // The curve itself, clipped to the chart area.
+    // The curve itself, clipped to the chart area and trimmed to [progress]
+    // of its length for the draw-in animation.
     canvas.save();
     canvas.clipRect(chart.inflate(4));
-    final linePath = Path();
+    final fullPath = Path();
     for (var i = 0; i < points.length; i++) {
       final o = at(points[i]);
-      i == 0 ? linePath.moveTo(o.dx, o.dy) : linePath.lineTo(o.dx, o.dy);
+      i == 0 ? fullPath.moveTo(o.dx, o.dy) : fullPath.lineTo(o.dx, o.dy);
     }
+
+    var linePath = fullPath;
+    var lineEnd = at(points.last);
+    if (progress < 1) {
+      final trimmed = Path();
+      for (final metric in fullPath.computeMetrics()) {
+        trimmed.addPath(
+          metric.extractPath(0, metric.length * progress),
+          Offset.zero,
+        );
+        final tangent = metric.getTangentForOffset(metric.length * progress);
+        if (tangent != null) lineEnd = tangent.position;
+      }
+      linePath = trimmed;
+    }
+
     final fillPath = Path.from(linePath)
-      ..lineTo(chart.right, chart.bottom)
+      ..lineTo(lineEnd.dx, chart.bottom)
       ..lineTo(chart.left, chart.bottom)
       ..close();
     canvas.drawPath(fillPath, Paint()..color = fill);
@@ -1665,13 +1889,16 @@ class _LineChartPainter extends CustomPainter {
         ..strokeJoin = StrokeJoin.round
         ..strokeCap = StrokeCap.round,
     );
-    canvas.drawCircle(at(points.last), 3.5, Paint()..color = line);
+    canvas.drawCircle(lineEnd, 3.5, Paint()..color = line);
     canvas.restore();
   }
 
   @override
   bool shouldRepaint(_LineChartPainter old) =>
-      old.points != points || old.line != line || old.fill != fill;
+      old.points != points ||
+      old.line != line ||
+      old.fill != fill ||
+      old.progress != progress;
 }
 
 // ─────────────────────────────── extras tab ────────────────────────────────
@@ -1859,8 +2086,9 @@ class _ExtrasViewState extends State<_ExtrasView> {
             }
 
             return AlertDialog(
-              shape:
-                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
               title: const Text("Change card PIN"),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1889,8 +2117,9 @@ class _ExtrasViewState extends State<_ExtrasView> {
               ),
               actions: [
                 TextButton(
-                  onPressed:
-                      busy ? null : () => Navigator.of(dialogContext).pop(false),
+                  onPressed: busy
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(false),
                   child: const Text("Cancel"),
                 ),
                 FilledButton(
@@ -1914,9 +2143,9 @@ class _ExtrasViewState extends State<_ExtrasView> {
     );
 
     if (changed == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Card PIN changed.")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Card PIN changed.")));
     }
   }
 
@@ -1934,8 +2163,10 @@ class _ExtrasViewState extends State<_ExtrasView> {
             children: [
               Text(
                 "Track one account as a meal plan to pace it down by term end.",
-                style:
-                    TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 10),
               Wrap(
@@ -1960,13 +2191,21 @@ class _ExtrasViewState extends State<_ExtrasView> {
                 Row(
                   children: [
                     Expanded(
-                      child: _termDateField("Term start", _mealPlan.start,
-                          () => _pickTermDate(true), scheme),
+                      child: _termDateField(
+                        "Term start",
+                        _mealPlan.start,
+                        () => _pickTermDate(true),
+                        scheme,
+                      ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: _termDateField("Term end", _mealPlan.end,
-                          () => _pickTermDate(false), scheme),
+                      child: _termDateField(
+                        "Term end",
+                        _mealPlan.end,
+                        () => _pickTermDate(false),
+                        scheme,
+                      ),
                     ),
                   ],
                 ),
@@ -1982,8 +2221,10 @@ class _ExtrasViewState extends State<_ExtrasView> {
             children: [
               Text(
                 "Set a new PIN for your WatCard.",
-                style:
-                    TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 10),
               Align(
@@ -2025,13 +2266,15 @@ class _SectionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.1,
-                color: scheme.onSurfaceVariant,
-              )),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1.1,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(height: 12),
           child,
         ],
@@ -2106,11 +2349,13 @@ class _SettingsViewState extends State<_SettingsView> {
               spacing: 16,
               runSpacing: 16,
               children: AppTheme.values
-                  .map((t) => _ThemeSwatch(
-                        option: t,
-                        selected: widget.theme.theme == t,
-                        onTap: () => widget.theme.set(t),
-                      ))
+                  .map(
+                    (t) => _ThemeSwatch(
+                      option: t,
+                      selected: widget.theme.theme == t,
+                      onTap: () => widget.theme.set(t),
+                    ),
+                  )
                   .toList(),
             ),
           ),
@@ -2152,9 +2397,9 @@ class _SettingsViewState extends State<_SettingsView> {
             child: ChoiceChip(
               label: const Text("View logs"),
               selected: false,
-              onSelected: (_) => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const LogViewerPage()),
-              ),
+              onSelected: (_) => Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const LogViewerPage())),
             ),
           ),
         ),
@@ -2308,8 +2553,9 @@ class _NavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final color =
-        selected ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
+    final color = selected
+        ? scheme.onSecondaryContainer
+        : scheme.onSurfaceVariant;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
@@ -2322,17 +2568,42 @@ class _NavItem extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Plain Container (not AnimatedContainer): the highlight appears and
-            // disappears instantly, so the old tab's pill doesn't linger/fade.
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
-              decoration: BoxDecoration(
-                color:
-                    selected ? scheme.secondaryContainer : Colors.transparent,
-                borderRadius: BorderRadius.circular(16),
+            // The newly selected pill pops in with a small overshoot; the old
+            // tab's pill still disappears instantly (no lingering fade — see
+            // the earlier flash fix). The TweenAnimationBuilder only exists on
+            // the selected item, so it mounts (and animates) exactly once per
+            // selection change.
+            if (selected)
+              TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0.8, end: 1),
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutBack,
+                builder: (_, scale, child) =>
+                    Transform.scale(scale: scale, child: child),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Icon(icon, size: 22, color: color),
+                ),
+              )
+            else
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(icon, size: 22, color: color),
               ),
-              child: Icon(icon, size: 22, color: color),
-            ),
             const SizedBox(height: 4),
             Text(
               label,
