@@ -126,13 +126,19 @@ ios/      # Native widget (WatBalWidget) + BalanceRefresher (BGAppRefreshTask).
 - **Dashboard** (`_dashboard`): the accounts overview — meal-plan card + hero
   cards. Tapping a hero pushes `_AccountDetailPage` (its own route, no nav bar).
 - **Analytics** (`_AnalyticsView`): intentionally blank placeholder for now.
-- **Extras** (`_ExtrasView`): meal-plan setup (see below) + Change card PIN.
-  The home meal-plan CTA jumps here (`_navIndex = 2`).
+- **Extras** (`_ExtrasView`): meal-plan setup (see below), Add funds (opens
+  the WatCard deposit page `watcard.uwaterloo.ca/WatCardDeposit/deposit` in a
+  `ChromeSafariBrowser` custom tab), and Change card PIN. The home meal-plan
+  CTA jumps here (`_navIndex = 2`).
 - **Settings** (`_SettingsView`): theme picker, widget account (when >1
-  account), View logs, Sign out.
+  account), View logs, re-sync history, Sign out. Takes the shared
+  `_HomeController` (for re-sync), not a bare accounts list.
 
 Extras/Settings are plain scrollable tab bodies (formerly modal dialogs); the
-AppBar title tracks the tab and has no action icons.
+AppBar title tracks the tab and has no action icons. The Scaffold sets
+`extendBody: true` so content scrolls *behind* the floating pill instead of
+stopping at a solid strip beside it — every tab body (and its skeleton) must
+therefore end with ~110px of bottom list padding to clear the bar.
 
 **Analytics tab** (`_AnalyticsView` + `_Analytics.from`): spending insights
 derived from the transaction cache, scoped by an account filter at the top —
@@ -143,17 +149,29 @@ all). The whole tab recomputes per filter, and the chart re-keys so it redraws. 
 current total balance and walking transactions backwards (`balance_before =
 balance_after − amountValue`, since debit `amountValue` is negative). The chart
 has labelled axes (price gridlines on Y; 4 date ticks on X, month-only labels
-for the year span) and a Week/Month/Year span selector (`_ChartSpan`, default
-Month); a synthetic point is prepended at the window cutoff so the step-function
+once the window spans several months) and a Week/Month/YTD/Year span selector
+(`_ChartSpan`, default Month; YTD's window starts at January 1);
+a synthetic point is prepended at the window cutoff so the step-function
 line always spans the full window. Plus a "this month you've spent $X" card
 comparing to the **past-year monthly average** (spend over the last 12
 completed months ÷ months spanned — clamped to when the data starts, so
-zero-spend months count but a short history isn't diluted).
+zero-spend months count but a short history isn't diluted). Below the chart:
+a **Top places** card (top 5 merchants by debit total over the trailing 30
+days, grouped by `terminalLabel`, with proportion bars) and a **Spending
+patterns** card (per-weekday debit totals over the trailing 90 days as mini
+bars + a peak time-of-day phrase — computed only from rows with a real
+timestamp, and omitted when fewer than half the recent debits have one,
+since the site leaves some rows at midnight). Both hide when empty.
 
 **Section cards**: every Extras/Settings subsection (Meal plan, Card PIN,
 Theme, Widget account, Logs, Sign out) sits in a `_SectionCard` — the
 analytics-style bubble (surfaceContainerHighest, radius 24, uppercase
 letter-spaced title) — for cross-tab consistency.
+
+**Re-sync history** (Settings → Data): `_HomeController.resync()` nulls the
+in-memory txns (tabs drop to skeletons), calls `clearScraperCache()`, then
+`refresh()` — the empty cache makes `syncTransactions` refetch from the 2000
+epoch, i.e. the complete history, and re-derive the balance-ID map.
 
 **Skeletons per tab**: each tab shows a shimmer placeholder while its data
 loads — `dashboardSkeleton`/`analyticsSkeleton` gate on `_data.txns == null`
@@ -167,7 +185,7 @@ with `easeOutBack` (only the *new* pill animates — the old one vanishes
 instantly, deliberate: an exit fade reads as a flash); hero cards compress to
 0.98 while pressed (`AnimatedScale` + `InkWell.onHighlightChanged`); the hero
 balance counts up/down on change (`_AnimatedAmount`, TweenAnimationBuilder —
-no animation on first render since begin == end); the meal-plan time bar eases
+no animation on first render since begin == end); the meal-plan spent bar eases
 to its value; the analytics line chart draws itself left-to-right via
 `PathMetric.extractPath` (`progress` on `_LineChartPainter`, re-keyed per
 span).
@@ -228,7 +246,7 @@ widget title), `transactions_json`, `last_updated`, `app_theme`.
 
 ## Themes
 
-`AppTheme { light, dark, purple }` (main.dart), Material 3
+`AppTheme { light, dark, purple, gold }` (main.dart), Material 3
 `ColorScheme.fromSeed` (vibrant variant). Widgets mirror these via the
 `app_theme` key — the native theme maps (`WidgetTheme.named` in
 `WatBalWidgetReceiver.kt`, shared by all Android widgets; the Swift switch in
@@ -237,8 +255,25 @@ hex and **fall back to light** for an unknown name, so a new app theme is safe
 even before the native maps learn it (the retired `green` case still lives in
 the native maps harmlessly). Purple = `deepPurple` seed
 (container #EBDDFF / onContainer #5B00C5); its widget background lives in
-`res/drawable/watbal_widget_bg_purple.xml`. UI must use
+`res/drawable/watbal_widget_bg_purple.xml`. Gold = the UWaterloo palette
+(#F2EDA8 / #FAE102 / #FDD34C / #EAAA01 + black/white): a *light* scheme
+seeded from the deep gold #EAAA01, then `copyWith` forces the brand colors
+exactly — primaryContainer #FDD34C with black text (heroes / widget bg,
+`watbal_widget_bg_gold.xml`), secondaryContainer pale #F2EDA8, surface
+white. UI must use
 `Theme.of(context).colorScheme` — no hardcoded colors.
+
+**Fonts** (UWaterloo brand, downloaded from uwaterloo.ca and converted
+woff2→ttf; files in `assets/fonts/`, registered in pubspec): body text is
+**Typ1451** (regular + medium w500) via `ThemeData.fontFamily`, so every
+plain `TextStyle` inherits it. Titles are **Bureau Grot** — `BureauGrot`
+(Light w300 + Book) on the textTheme display/headline/titleLarge slots
+(AppBar picks up titleLarge) and on hand-rolled headings + the big money
+figures (hero 52px, meal-plan per-day + month-spend 40px).
+`BureauGrotCondensed` (Book only) is registered but currently unused. The
+families have no bold faces, so
+`w800` declarations render the Book weight; an unregistered family falls
+back to the platform default.
 
 ## Meal-plan tracking
 
@@ -247,7 +282,10 @@ designates **one** account as the meal plan and sets its term start/end in the
 **Extras** tab (`meal_plan.dart`: `MealPlanConfig`, prefs `meal_plan_account` /
 `_start` / `_end`). `MealPlanPacing.compute` derives the
 per-day allowance (`balance / daysRemaining`), a recent pace (debits over a
-trailing 14-day window), and a status verdict (on track / spending too fast /
+trailing 14-day window), a spent fraction for the card's progress bar
+(spend since term start ÷ the term-start balance, which is reconstructed by
+undoing all on/after-start transactions from the current balance — pre-term
+spending never counts), and a status verdict (on track / spending too fast /
 money to spare / term ended) by projecting the run-out date against term end
 (±5-day slack). The first page shows `_MealPlanCard` at the top of the accounts
 list — a setup CTA when unconfigured, a shimmer while its txns load, else the

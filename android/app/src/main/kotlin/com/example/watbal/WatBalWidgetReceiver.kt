@@ -148,6 +148,14 @@ data class WidgetTheme(
                 Color.parseColor("#8C1414"),
                 Color.parseColor("#1B5E20"),
             )
+            "gold" -> WidgetTheme(
+                R.drawable.watbal_widget_bg_gold,
+                Color.parseColor("#000000"), // onPrimaryContainer (forced black)
+                Color.parseColor("#000000"),
+                Color.parseColor("#B3000000"), // 70% alpha
+                Color.parseColor("#8C1414"), // dark red, legible on gold
+                Color.parseColor("#1B5E20"),
+            )
             "purple" -> WidgetTheme(
                 R.drawable.watbal_widget_bg_purple,
                 Color.parseColor("#5B00C5"), // onPrimaryContainer

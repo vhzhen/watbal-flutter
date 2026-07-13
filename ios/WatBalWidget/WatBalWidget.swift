@@ -34,6 +34,14 @@ struct WidgetTheme {
                 text: Color(red: 0.36, green: 0.0, blue: 0.77),
                 secondary: Color(red: 0.36, green: 0.0, blue: 0.77).opacity(0.7)
             )
+        case "gold":
+            // UWaterloo gold: container #FDD34C, onContainer black.
+            return WidgetTheme(
+                background: Color(red: 0.99, green: 0.83, blue: 0.30),
+                primary: .black,
+                text: .black,
+                secondary: Color.black.opacity(0.7)
+            )
         default: // light
             return WidgetTheme(
                 background: .white,

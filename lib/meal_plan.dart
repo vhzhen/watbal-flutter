@@ -131,9 +131,12 @@ class MealPlanPacing {
   /// Recent average daily spend on this account (trailing window).
   final double recentDailyPace;
 
-  /// Fraction of the term's days gone by (0–1), for the progress bar: 0 = term
-  /// start, 1 = the final day has arrived.
-  final double termElapsedFraction;
+  /// Fraction of the term-start balance spent so far (0–1), for the progress
+  /// bar: 0 = pot untouched, 1 = fully used. The start balance is
+  /// reconstructed from history — the current balance with every transaction
+  /// dated on/after term start undone — so spending *before* the term never
+  /// counts against the pot.
+  final double spentFraction;
 
   final MealPlanStatus status;
 
@@ -142,7 +145,7 @@ class MealPlanPacing {
     required this.daysRemaining,
     required this.balance,
     required this.recentDailyPace,
-    required this.termElapsedFraction,
+    required this.spentFraction,
     required this.status,
   });
 
@@ -166,9 +169,20 @@ class MealPlanPacing {
     final termStart = _dateOnly(start);
     final termEnd = _dateOnly(end);
 
-    final termElapsed = (today.difference(termStart).inDays /
-            (termEnd.difference(termStart).inDays).clamp(1, 1 << 31))
-        .clamp(0.0, 1.0);
+    // Balance at term start = current balance with every transaction dated
+    // on/after the start undone (amountValue is negative for debits, so
+    // credits/top-ups also unwind correctly).
+    var netSinceStart = 0.0;
+    for (final t in txns) {
+      final d = t.parsedDate;
+      if (d == null) continue;
+      if (_dateOnly(d).isBefore(termStart)) continue;
+      netSinceStart += t.amountValue;
+    }
+    final startBalance = balance - netSinceStart;
+    final spentFraction = startBalance <= 0
+        ? 0.0
+        : ((startBalance - balance) / startBalance).clamp(0.0, 1.0);
 
     if (!today.isBefore(termEnd)) {
       return MealPlanPacing(
@@ -176,7 +190,7 @@ class MealPlanPacing {
         daysRemaining: 0,
         balance: balance,
         recentDailyPace: 0,
-        termElapsedFraction: 1,
+        spentFraction: spentFraction,
         status: MealPlanStatus.termEnded,
       );
     }
@@ -224,7 +238,7 @@ class MealPlanPacing {
       daysRemaining: daysRemaining,
       balance: balance,
       recentDailyPace: recentDailyPace,
-      termElapsedFraction: termElapsed,
+      spentFraction: spentFraction,
       status: status,
     );
   }

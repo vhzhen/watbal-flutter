@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:watbal/auth.dart';
@@ -92,6 +93,10 @@ class _HomePageState extends State<HomePage> {
       listenable: _data,
       builder: (context, _) {
         return Scaffold(
+          // The nav bar floats: the body extends behind it (content scrolls
+          // past under the pill) instead of stopping at a solid strip. Tab
+          // bodies compensate with extra bottom list padding.
+          extendBody: true,
           appBar: AppBar(
             title: Text(
               _navTitles[_navIndex],
@@ -128,7 +133,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 3 => _SettingsView(
                   theme: widget.theme,
-                  accounts: _data.accounts,
+                  data: _data,
                   onSignedOut: _signOut,
                 ),
                 _ => _dashboard(context),
@@ -150,7 +155,7 @@ class _HomePageState extends State<HomePage> {
       onRefresh: _data.refresh,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 40),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 110),
         children: [
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
@@ -357,6 +362,18 @@ class _HomeController extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  /// Full re-sync: wipe the local transaction cache + balance-ID map, then
+  /// refetch everything. With an empty cache, [Scraper.syncTransactions]
+  /// starts from its 2000 epoch — the complete history. The tabs fall back to
+  /// their skeletons while `txns` is null.
+  Future<void> resync() async {
+    _txns = null;
+    _balanceIds = const {};
+    notifyListeners();
+    await clearScraperCache();
+    await refresh();
   }
 
   /// The freshest balance row for [account] (a refresh replaces the list, so
@@ -794,10 +811,11 @@ class _MealPlanCard extends StatelessWidget {
           else
             _AllowanceHeadline(pacing: pacing, end: end, scheme: scheme),
           const SizedBox(height: 16),
-          // Time bar: percentage of the term's days gone by; full = final day.
+          // Spent bar: fraction of the term-start balance used so far;
+          // empty = pot untouched, full = all spent.
           // Micro-animation: eases from empty to its value on appearance.
           TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0, end: pacing.termElapsedFraction),
+            tween: Tween(begin: 0, end: pacing.spentFraction),
             duration: const Duration(milliseconds: 700),
             curve: Curves.easeOutCubic,
             builder: (_, v, _) => ClipRRect(
@@ -847,6 +865,7 @@ class _AllowanceHeadline extends StatelessWidget {
             Text(
               _money(pacing.perDayAllowance),
               style: TextStyle(
+                fontFamily: 'BureauGrot',
                 fontSize: 40,
                 fontWeight: FontWeight.w800,
                 letterSpacing: -1,
@@ -887,6 +906,7 @@ class _EndedHeadline extends StatelessWidget {
         Text(
           balance <= 0 ? "All used up" : "Term's over",
           style: TextStyle(
+            fontFamily: 'BureauGrot',
             fontSize: 26,
             fontWeight: FontWeight.w800,
             letterSpacing: -0.5,
@@ -1009,6 +1029,7 @@ class _HeroCardState extends State<_HeroCard> {
                       child: _AnimatedAmount(
                         amount: account.amount,
                         style: TextStyle(
+                          fontFamily: 'BureauGrot',
                           fontSize: 52,
                           fontWeight: FontWeight.w800,
                           color: onContainer,
@@ -1413,7 +1434,7 @@ class _AnalyticsViewState extends State<_AnalyticsView> {
     final a = _Analytics.from(filteredTxns, balance);
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
       children: [
         if (accounts.length > 1) ...[
           Wrap(
@@ -1460,6 +1481,14 @@ class _AnalyticsViewState extends State<_AnalyticsView> {
           // Keyed on the filter so switching accounts re-runs the chart's
           // draw-in animation with the new curve.
           _BalanceTrendCard(key: ValueKey(_account), a: a),
+          if (a.topMerchants.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            _TopMerchantsCard(a: a),
+          ],
+          if (a.hasPatterns) ...[
+            const SizedBox(height: 16),
+            _SpendingPatternsCard(a: a),
+          ],
         ],
       ],
     );
@@ -1480,14 +1509,30 @@ class _Analytics {
 
   final int thisMonthCount;
 
+  /// Where the money went over the trailing 30 days: top 5 merchants by total
+  /// debited, with visit counts. Empty when there's no recent spending.
+  final List<({String name, double total, int count})> topMerchants;
+
+  /// Debit totals per weekday (index 0 = Monday) over the trailing 90 days.
+  final List<double> weekdaySpend;
+
+  /// Human phrase for the peak spending time of day ("around lunch"), or null
+  /// when too few rows carry a real timestamp to say anything.
+  final String? peakTimeLabel;
+
   const _Analytics({
     required this.balanceSeries,
     required this.thisMonthSpend,
     required this.typicalMonthSpend,
     required this.thisMonthCount,
+    required this.topMerchants,
+    required this.weekdaySpend,
+    required this.peakTimeLabel,
   });
 
   bool get isEmpty => balanceSeries.length < 2 && thisMonthSpend == 0;
+
+  bool get hasPatterns => weekdaySpend.any((v) => v > 0);
 
   factory _Analytics.from(List<Transaction> txns, double totalBalance) {
     final now = DateTime.now();
@@ -1517,6 +1562,13 @@ class _Analytics {
     final yearStart = DateTime(now.year - 1, now.month, 1);
     var pastYearSpend = 0.0;
     DateTime? firstDebitMonth;
+    final merchantCutoff = now.subtract(const Duration(days: 30));
+    final patternCutoff = now.subtract(const Duration(days: 90));
+    final byMerchant = <String, ({double total, int count})>{};
+    final weekdaySpend = List<double>.filled(7, 0);
+    // Time-of-day buckets: morning / lunch / afternoon / dinner / late night.
+    final bucketSpend = List<double>.filled(5, 0);
+    var patternDebits = 0, timedDebits = 0;
     for (final t in dated) {
       if (!t.isDebit) continue;
       final amt = -t.amountValue;
@@ -1528,6 +1580,51 @@ class _Analytics {
       } else if (!d.isBefore(yearStart)) {
         pastYearSpend += amt;
       }
+      if (d.isAfter(merchantCutoff)) {
+        final name = t.terminalLabel;
+        if (name.isNotEmpty) {
+          final prev = byMerchant[name] ?? (total: 0.0, count: 0);
+          byMerchant[name] = (total: prev.total + amt, count: prev.count + 1);
+        }
+      }
+      if (d.isAfter(patternCutoff)) {
+        weekdaySpend[d.weekday - 1] += amt;
+        patternDebits++;
+        // The site omits the time on some rows; parsedDate reads those as
+        // exactly midnight, so only real timestamps feed the buckets.
+        if (d.hour != 0 || d.minute != 0) {
+          timedDebits++;
+          bucketSpend[switch (d.hour) {
+            >= 6 && < 11 => 0, // morning
+            >= 11 && < 14 => 1, // lunch
+            >= 14 && < 17 => 2, // afternoon
+            >= 17 && < 21 => 3, // dinner
+            _ => 4, // late night
+          }] += amt;
+        }
+      }
+    }
+
+    final topMerchants = byMerchant.entries
+        .map((e) => (name: e.key, total: e.value.total, count: e.value.count))
+        .toList()
+      ..sort((x, y) => y.total.compareTo(x.total));
+
+    // Only call a peak time when at least half the recent debits are actually
+    // timestamped — otherwise the buckets are too sparse to trust.
+    String? peakTimeLabel;
+    if (timedDebits > 0 && timedDebits * 2 >= patternDebits) {
+      var peak = 0;
+      for (var i = 1; i < bucketSpend.length; i++) {
+        if (bucketSpend[i] > bucketSpend[peak]) peak = i;
+      }
+      peakTimeLabel = const [
+        "in the morning",
+        "around lunch",
+        "in the afternoon",
+        "around dinner",
+        "late at night",
+      ][peak];
     }
 
     // Typical month = average monthly spend over the past year's completed
@@ -1545,6 +1642,9 @@ class _Analytics {
       thisMonthSpend: thisMonthSpend,
       typicalMonthSpend: typicalMonth,
       thisMonthCount: thisMonthCount,
+      topMerchants: topMerchants.take(5).toList(),
+      weekdaySpend: weekdaySpend,
+      peakTimeLabel: peakTimeLabel,
     );
   }
 }
@@ -1585,6 +1685,7 @@ class _MonthSummaryCard extends StatelessWidget {
           Text(
             _money(a.thisMonthSpend),
             style: TextStyle(
+              fontFamily: 'BureauGrot',
               fontSize: 40,
               fontWeight: FontWeight.w800,
               letterSpacing: -1,
@@ -1625,19 +1726,222 @@ class _MonthSummaryCard extends StatelessWidget {
   }
 }
 
+/// Top 5 merchants over the past 30 days, each with a proportion bar scaled
+/// to the biggest spender on the list.
+class _TopMerchantsCard extends StatelessWidget {
+  final _Analytics a;
+  const _TopMerchantsCard({required this.a});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final max = a.topMerchants.first.total;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "TOP PLACES · PAST 30 DAYS",
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1.1,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 6),
+          for (final m in a.topMerchants) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    m.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  "${m.count} visit${m.count == 1 ? '' : 's'}",
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _money(m.total),
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: max <= 0 ? 0 : (m.total / max).clamp(0.0, 1.0),
+                minHeight: 4,
+                backgroundColor: scheme.surface,
+                valueColor: AlwaysStoppedAnimation(scheme.primary),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Debit totals per weekday (trailing 90 days) as mini bars, plus a caption
+/// naming the peak day and — when timestamps allow — the peak time of day.
+class _SpendingPatternsCard extends StatelessWidget {
+  final _Analytics a;
+  const _SpendingPatternsCard({required this.a});
+
+  static const _dayLetters = ["M", "T", "W", "T", "F", "S", "S"];
+  static const _dayNames = [
+    "Mondays",
+    "Tuesdays",
+    "Wednesdays",
+    "Thursdays",
+    "Fridays",
+    "Saturdays",
+    "Sundays",
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    var peak = 0;
+    var max = 0.0;
+    for (var i = 0; i < 7; i++) {
+      if (a.weekdaySpend[i] > max) {
+        max = a.weekdaySpend[i];
+        peak = i;
+      }
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "SPENDING PATTERNS · PAST 90 DAYS",
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1.1,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              for (var i = 0; i < 7; i++)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Column(
+                      children: [
+                        SizedBox(
+                          height: 64,
+                          child: Align(
+                            alignment: Alignment.bottomCenter,
+                            child: FractionallySizedBox(
+                              heightFactor: max <= 0
+                                  ? 0.04
+                                  : (a.weekdaySpend[i] / max).clamp(0.04, 1.0),
+                              child: Container(
+                                width: double.infinity,
+                                decoration: BoxDecoration(
+                                  color: i == peak
+                                      ? scheme.primary
+                                      : scheme.primaryContainer,
+                                  borderRadius: const BorderRadius.vertical(
+                                    top: Radius.circular(4),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          _dayLetters[i],
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight:
+                                i == peak ? FontWeight.w700 : FontWeight.w500,
+                            color: i == peak
+                                ? scheme.onSurface
+                                : scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            "Most spending on ${_dayNames[peak]}"
+            "${a.peakTimeLabel == null ? '' : ' · usually ${a.peakTimeLabel}'}",
+            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// The selectable window for the balance chart.
 enum _ChartSpan {
   week(days: 7, label: "Week"),
   month(days: 30, label: "Month"),
+  ytd(days: null, label: "YTD"),
   year(days: 365, label: "Year");
 
-  final int days;
+  /// Trailing-window length, or null for the calendar year-to-date window.
+  final int? days;
   final String label;
   const _ChartSpan({required this.days, required this.label});
+
+  /// Start of the window that ends at [now]: a fixed number of days back, or
+  /// January 1 for YTD.
+  DateTime cutoff(DateTime now) {
+    final d = days;
+    return d == null ? DateTime(now.year) : now.subtract(Duration(days: d));
+  }
 }
 
 /// The reconstructed balance-over-time line chart in a titled card, with a
-/// Week / Month / Year span selector (default: last month) and labelled axes.
+/// Week / Month / YTD / Year span selector (default: last month) and labelled
+/// axes.
 class _BalanceTrendCard extends StatefulWidget {
   final _Analytics a;
   const _BalanceTrendCard({super.key, required this.a});
@@ -1654,7 +1958,7 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
   /// before it — the line always spans the full window, even for a quiet week.
   List<({DateTime date, double value})> _windowed() {
     final all = widget.a.balanceSeries;
-    final cutoff = DateTime.now().subtract(Duration(days: _span.days));
+    final cutoff = _span.cutoff(DateTime.now());
     final inWindow = all.where((p) => p.date.isAfter(cutoff)).toList();
     ({DateTime date, double value})? boundary;
     for (final p in all) {
@@ -1664,10 +1968,15 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
     return [?boundary, ...inWindow];
   }
 
-  /// X-axis tick label, formatted for the span's granularity.
-  String _tick(DateTime d) => _span == _ChartSpan.year
-      ? _monthAbbr[d.month - 1]
-      : "${_monthAbbr[d.month - 1]} ${d.day}";
+  /// X-axis tick label, formatted for the window's actual length: month-only
+  /// once it spans several months (Year always; YTD from spring onward).
+  String _tick(DateTime d) {
+    final now = DateTime.now();
+    final monthsOnly = now.difference(_span.cutoff(now)).inDays > 120;
+    return monthsOnly
+        ? _monthAbbr[d.month - 1]
+        : "${_monthAbbr[d.month - 1]} ${d.day}";
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2149,12 +2458,30 @@ class _ExtrasViewState extends State<_ExtrasView> {
     }
   }
 
+  /// The university's online WatCard top-up page.
+  static const _depositUrl =
+      "https://watcard.uwaterloo.ca/WatCardDeposit/deposit";
+
+  /// Opens the deposit page in a Chrome Custom Tab / SFSafariViewController —
+  /// a real browser context (shared cookies, autofillable payment forms), not
+  /// the app's scraping WebView.
+  Future<void> _openDepositPage(BuildContext context) async {
+    try {
+      await ChromeSafariBrowser().open(url: WebUri(_depositUrl));
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't open the deposit page.")),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) return extrasSkeleton();
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
       children: [
         _SectionCard(
           title: "MEAL PLAN",
@@ -2210,6 +2537,31 @@ class _ExtrasViewState extends State<_ExtrasView> {
                   ],
                 ),
               ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: "ADD FUNDS",
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Top up your WatCard online.",
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ChoiceChip(
+                  label: const Text("Add funds"),
+                  selected: false,
+                  onSelected: (_) => _openDepositPage(context),
+                ),
+              ),
             ],
           ),
         ),
@@ -2287,12 +2639,12 @@ class _SectionCard extends StatelessWidget {
 
 class _SettingsView extends StatefulWidget {
   final ThemeController theme;
-  final List<AccountBalance> accounts;
+  final _HomeController data;
   final VoidCallback onSignedOut;
 
   const _SettingsView({
     required this.theme,
-    required this.accounts,
+    required this.data,
     required this.onSignedOut,
   });
 
@@ -2303,6 +2655,8 @@ class _SettingsView extends StatefulWidget {
 class _SettingsViewState extends State<_SettingsView> {
   String? _widgetAccount;
   bool _loading = true;
+
+  List<AccountBalance> get accounts => widget.data.accounts;
 
   @override
   void initState() {
@@ -2318,9 +2672,9 @@ class _SettingsViewState extends State<_SettingsView> {
       _loading = false;
       // Default to the first account when nothing is saved (or the saved one
       // no longer exists), matching what the scraper actually pushes.
-      _widgetAccount = widget.accounts.any((a) => a.name == saved)
+      _widgetAccount = accounts.any((a) => a.name == saved)
           ? saved
-          : (widget.accounts.isEmpty ? null : widget.accounts.first.name);
+          : (accounts.isEmpty ? null : accounts.first.name);
     });
   }
 
@@ -2330,7 +2684,32 @@ class _SettingsViewState extends State<_SettingsView> {
     await prefs.setString(kWidgetAccountKey, name);
     // Re-push immediately so the home-screen widget switches without waiting
     // for the next scrape.
-    await Scraper().pushSelectedBalanceToWidget(widget.accounts);
+    await Scraper().pushSelectedBalanceToWidget(accounts);
+  }
+
+  /// Confirm, then wipe the local cache and refetch the complete history.
+  Future<void> _confirmResync() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Re-sync history?"),
+        content: const Text(
+          "This clears the locally cached transactions and re-downloads your "
+          "full transaction history. Use it if anything ever looks wrong.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Re-sync"),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) await widget.data.resync();
   }
 
   @override
@@ -2338,7 +2717,7 @@ class _SettingsViewState extends State<_SettingsView> {
     if (_loading) return settingsSkeleton();
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
       children: [
         _SectionCard(
           title: "THEME",
@@ -2360,7 +2739,7 @@ class _SettingsViewState extends State<_SettingsView> {
             ),
           ),
         ),
-        if (widget.accounts.length > 1) ...[
+        if (accounts.length > 1) ...[
           const SizedBox(height: 16),
           _SectionCard(
             title: "WIDGET ACCOUNT",
@@ -2370,7 +2749,7 @@ class _SettingsViewState extends State<_SettingsView> {
                 if (v != null) _selectWidgetAccount(v);
               },
               child: Column(
-                children: widget.accounts
+                children: accounts
                     .map(
                       (a) => RadioListTile<String>(
                         value: a.name,
@@ -2401,6 +2780,39 @@ class _SettingsViewState extends State<_SettingsView> {
                 context,
               ).push(MaterialPageRoute(builder: (_) => const LogViewerPage())),
             ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: "DATA",
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Clear the local cache and re-download your full "
+                "transaction history.",
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ListenableBuilder(
+                  listenable: widget.data,
+                  builder: (context, _) => ChoiceChip(
+                    label: Text(
+                      widget.data.refreshing ? "Syncing…" : "Re-sync history",
+                    ),
+                    selected: false,
+                    onSelected: widget.data.refreshing
+                        ? null
+                        : (_) => _confirmResync(),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 16),
@@ -2512,6 +2924,9 @@ class _BottomNavBar extends StatelessWidget {
         decoration: BoxDecoration(
           color: scheme.surfaceContainer,
           borderRadius: BorderRadius.circular(28),
+          // Subtle outline so the pill reads against content scrolling
+          // behind it (extendBody), whatever the theme.
+          border: Border.all(color: scheme.outlineVariant, width: 1),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.08),

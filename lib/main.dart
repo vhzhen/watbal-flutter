@@ -57,40 +57,84 @@ Future<void> main() async {
 
 // ─────────────────────────── theme persistence ─────────────────────────────
 
-enum AppTheme { light, dark, purple }
+enum AppTheme { light, dark, purple, gold }
+
+// The UWaterloo gold palette (plus black and white). The bright #FAE102 is
+// currently unused.
+const _goldPale = Color(0xFFF2EDA8);
+const _gold = Color(0xFFFDD34C);
+const _goldDeep = Color(0xFFEAAA01);
 
 extension AppThemeX on AppTheme {
   String get label => switch (this) {
         AppTheme.light => 'Light',
         AppTheme.dark => 'Dark',
         AppTheme.purple => 'Purple',
+        AppTheme.gold => 'Gold',
       };
 
   Color get swatch => switch (this) {
         AppTheme.light => Colors.white,
         AppTheme.dark => const Color(0xFF1C1C1E),
         AppTheme.purple => const Color(0xFF6A1B9A),
+        AppTheme.gold => _gold,
       };
 
   ThemeData get themeData => switch (this) {
         AppTheme.light => _build(Colors.blue, Brightness.light),
         AppTheme.dark => _build(Colors.blue, Brightness.dark),
         AppTheme.purple => _build(Colors.deepPurple, Brightness.light),
+        // UWaterloo gold: a light scheme seeded from the deep gold (which
+        // derives a readable dark-ochre primary and warm greys), with the
+        // brand colors forced exactly — gold heroes and pale-gold chips on a
+        // white surface. Black appears only as text on the gold cards.
+        AppTheme.gold => _build(
+            _goldDeep,
+            Brightness.light,
+            tweak: (s) => s.copyWith(
+              primaryContainer: _gold,
+              onPrimaryContainer: Colors.black,
+              secondaryContainer: _goldPale,
+              onSecondaryContainer: Colors.black,
+              surface: Colors.white,
+            ),
+          ),
       };
 }
 
-ThemeData _build(Color seed, Brightness brightness) {
+ThemeData _build(
+  Color seed,
+  Brightness brightness, {
+  ColorScheme Function(ColorScheme)? tweak,
+}) {
   // Vibrant variant keeps the seed hue saturated. The default tonal mapping
   // desaturates a pure green into a muted grey-brown.
-  final scheme = ColorScheme.fromSeed(
+  var scheme = ColorScheme.fromSeed(
     seedColor: seed,
     brightness: brightness,
     dynamicSchemeVariant: DynamicSchemeVariant.vibrant,
   );
-  return ThemeData(
+  if (tweak != null) scheme = tweak(scheme);
+  // UWaterloo brand fonts: Typ1451 for text, Bureau Grot for titles (an
+  // unregistered family silently falls back to the platform default, so a
+  // missing font file degrades gracefully).
+  final base = ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
+    fontFamily: 'Typ1451',
     scaffoldBackgroundColor: scheme.surface,
+  );
+  TextStyle? grot(TextStyle? s) => s?.copyWith(fontFamily: 'BureauGrot');
+  return base.copyWith(
+    textTheme: base.textTheme.copyWith(
+      displayLarge: grot(base.textTheme.displayLarge),
+      displayMedium: grot(base.textTheme.displayMedium),
+      displaySmall: grot(base.textTheme.displaySmall),
+      headlineLarge: grot(base.textTheme.headlineLarge),
+      headlineMedium: grot(base.textTheme.headlineMedium),
+      headlineSmall: grot(base.textTheme.headlineSmall),
+      titleLarge: grot(base.textTheme.titleLarge), // AppBar titles
+    ),
     appBarTheme: AppBarTheme(
       backgroundColor: scheme.surface,
       foregroundColor: scheme.onSurface,

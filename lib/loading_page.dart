@@ -223,6 +223,7 @@ class _Brandmark extends StatelessWidget {
         Text(
           "WatBal",
           style: TextStyle(
+            fontFamily: 'BureauGrot',
             fontSize: 32,
             fontWeight: FontWeight.w800,
             letterSpacing: -0.5,
