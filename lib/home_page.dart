@@ -1684,6 +1684,45 @@ enum _StatsWindow {
   }
 }
 
+/// Each analytics card remembers its window selection across sessions, under
+/// `stats_window_<id>` (ids: chart / merchants / patterns).
+Future<_StatsWindow?> _loadStatsWindow(String id) async {
+  final prefs = await SharedPreferences.getInstance();
+  final name = prefs.getString('stats_window_$id');
+  for (final w in _StatsWindow.values) {
+    if (w.name == name) return w;
+  }
+  return null;
+}
+
+Future<void> _saveStatsWindow(String id, _StatsWindow w) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('stats_window_$id', w.name);
+}
+
+/// State mixin for a card with a persisted window selection: starts on
+/// [defaultWindow], restores the saved choice on mount, and [setWindow]
+/// persists changes.
+mixin _PersistedWindow<T extends StatefulWidget> on State<T> {
+  String get windowPrefId;
+  _StatsWindow get defaultWindow;
+
+  late _StatsWindow _window = defaultWindow;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStatsWindow(windowPrefId).then((w) {
+      if (w != null && w != _window && mounted) setState(() => _window = w);
+    });
+  }
+
+  void setWindow(_StatsWindow w) {
+    setState(() => _window = w);
+    _saveStatsWindow(windowPrefId, w);
+  }
+}
+
 /// The compact "30 days ▾" window filter in a stats card's top-right corner.
 class _WindowMenu extends StatelessWidget {
   final _StatsWindow value;
@@ -1733,8 +1772,12 @@ class _TopMerchantsCard extends StatefulWidget {
   State<_TopMerchantsCard> createState() => _TopMerchantsCardState();
 }
 
-class _TopMerchantsCardState extends State<_TopMerchantsCard> {
-  _StatsWindow _window = _StatsWindow.d30;
+class _TopMerchantsCardState extends State<_TopMerchantsCard>
+    with _PersistedWindow {
+  @override
+  String get windowPrefId => 'merchants';
+  @override
+  _StatsWindow get defaultWindow => _StatsWindow.d30;
 
   List<({String name, double total, int count})> _top() {
     final now = DateTime.now();
@@ -1785,10 +1828,7 @@ class _TopMerchantsCardState extends State<_TopMerchantsCard> {
                   ),
                 ),
               ),
-              _WindowMenu(
-                value: _window,
-                onChanged: (w) => setState(() => _window = w),
-              ),
+              _WindowMenu(value: _window, onChanged: setWindow),
             ],
           ),
           if (top.isEmpty)
@@ -1863,8 +1903,12 @@ class _SpendingPatternsCard extends StatefulWidget {
   State<_SpendingPatternsCard> createState() => _SpendingPatternsCardState();
 }
 
-class _SpendingPatternsCardState extends State<_SpendingPatternsCard> {
-  _StatsWindow _window = _StatsWindow.d90;
+class _SpendingPatternsCardState extends State<_SpendingPatternsCard>
+    with _PersistedWindow {
+  @override
+  String get windowPrefId => 'patterns';
+  @override
+  _StatsWindow get defaultWindow => _StatsWindow.d90;
 
   static const _dayLetters = ["M", "T", "W", "T", "F", "S", "S"];
   static const _dayNames = [
@@ -1961,10 +2005,7 @@ class _SpendingPatternsCardState extends State<_SpendingPatternsCard> {
                   ),
                 ),
               ),
-              _WindowMenu(
-                value: _window,
-                onChanged: (w) => setState(() => _window = w),
-              ),
+              _WindowMenu(value: _window, onChanged: setWindow),
             ],
           ),
           if (max <= 0) ...[
@@ -1996,9 +2037,7 @@ class _SpendingPatternsCardState extends State<_SpendingPatternsCard> {
                                 child: Container(
                                   width: double.infinity,
                                   decoration: BoxDecoration(
-                                    color: i == peak
-                                        ? scheme.primary
-                                        : scheme.primaryContainer,
+                                    color: scheme.primary,
                                     borderRadius: const BorderRadius.vertical(
                                       top: Radius.circular(4),
                                     ),
@@ -2050,8 +2089,12 @@ class _BalanceTrendCard extends StatefulWidget {
   State<_BalanceTrendCard> createState() => _BalanceTrendCardState();
 }
 
-class _BalanceTrendCardState extends State<_BalanceTrendCard> {
-  _StatsWindow _window = _StatsWindow.d30;
+class _BalanceTrendCardState extends State<_BalanceTrendCard>
+    with _PersistedWindow {
+  @override
+  String get windowPrefId => 'chart';
+  @override
+  _StatsWindow get defaultWindow => _StatsWindow.d30;
 
   /// The series clipped to the selected window (all time = uncut). Balance is
   /// a step function, so a synthetic point is prepended at the cutoff carrying
@@ -2113,10 +2156,7 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
                   ),
                 ),
               ),
-              _WindowMenu(
-                value: _window,
-                onChanged: (w) => setState(() => _window = w),
-              ),
+              _WindowMenu(value: _window, onChanged: setWindow),
             ],
           ),
           const SizedBox(height: 14),

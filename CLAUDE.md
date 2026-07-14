@@ -166,7 +166,9 @@ midnight). Each card has its own trailing-window filter in its top-right
 corner (`_StatsWindow` popup via `_WindowMenu`: 30 days / 90 days / past
 year / all time; defaults 30d and 90d respectively), computes from the
 tab's filtered txns inside the card, and shows a "No purchases in this
-period" line when its window is empty.
+period" line when its window is empty. All three window selections (chart
+included) persist across sessions via the `_PersistedWindow` state mixin
+(prefs `stats_window_chart` / `_merchants` / `_patterns`).
 
 **Section cards**: every Extras/Settings subsection (Meal plan, Card PIN,
 Theme, Widget account, Logs, Sign out) sits in a `_SectionCard` — the
