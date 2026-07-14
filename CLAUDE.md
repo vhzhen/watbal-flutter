@@ -138,7 +138,7 @@ Extras/Settings are plain scrollable tab bodies (formerly modal dialogs); the
 AppBar title tracks the tab and has no action icons. The Scaffold sets
 `extendBody: true` so content scrolls *behind* the floating pill instead of
 stopping at a solid strip beside it — every tab body (and its skeleton) must
-therefore end with ~110px of bottom list padding to clear the bar.
+therefore end with ~140px of bottom list padding to clear the bar.
 
 **Analytics tab** (`_AnalyticsView` + `_Analytics.from`): spending insights
 derived from the transaction cache, scoped by an account filter at the top —
@@ -149,19 +149,24 @@ all). The whole tab recomputes per filter, and the chart re-keys so it redraws. 
 current total balance and walking transactions backwards (`balance_before =
 balance_after − amountValue`, since debit `amountValue` is negative). The chart
 has labelled axes (price gridlines on Y; 4 date ticks on X, month-only labels
-once the window spans several months) and a Week/Month/YTD/Year span selector
-(`_ChartSpan`, default Month; YTD's window starts at January 1);
+once the window spans several months — with the year appended, "Sep 2026",
+when the plotted range crosses years) and the same `_StatsWindow`/`_WindowMenu`
+top-right filter as the stats cards (default 30 days; all time = uncut);
 a synthetic point is prepended at the window cutoff so the step-function
 line always spans the full window. Plus a "this month you've spent $X" card
 comparing to the **past-year monthly average** (spend over the last 12
 completed months ÷ months spanned — clamped to when the data starts, so
 zero-spend months count but a short history isn't diluted). Below the chart:
-a **Top places** card (top 5 merchants by debit total over the trailing 30
-days, grouped by `terminalLabel`, with proportion bars) and a **Spending
-patterns** card (per-weekday debit totals over the trailing 90 days as mini
-bars + a peak time-of-day phrase — computed only from rows with a real
-timestamp, and omitted when fewer than half the recent debits have one,
-since the site leaves some rows at midnight). Both hide when empty.
+a **Top places** card (top 5 merchants by debit total, grouped by
+`terminalLabel`, with proportion bars) and a **Spending patterns** card
+(per-weekday debit totals as mini bars + a peak time-of-day phrase —
+computed only from rows with a real timestamp, and omitted when fewer than
+half the window's debits have one, since the site leaves some rows at
+midnight). Each card has its own trailing-window filter in its top-right
+corner (`_StatsWindow` popup via `_WindowMenu`: 30 days / 90 days / past
+year / all time; defaults 30d and 90d respectively), computes from the
+tab's filtered txns inside the card, and shows a "No purchases in this
+period" line when its window is empty.
 
 **Section cards**: every Extras/Settings subsection (Meal plan, Card PIN,
 Theme, Widget account, Logs, Sign out) sits in a `_SectionCard` — the

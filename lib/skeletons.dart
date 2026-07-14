@@ -131,7 +131,7 @@ Widget txnRowsSkeleton() {
 Widget dashboardSkeleton() {
   return Shimmer(
     child: ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 110),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 140),
       children: const [
         Align(
           alignment: Alignment.centerRight,
@@ -152,7 +152,7 @@ Widget dashboardSkeleton() {
 Widget analyticsSkeleton() {
   return Shimmer(
     child: ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 140),
       children: [
         const Skeleton(height: 132, radius: 24),
         const SizedBox(height: 16),
@@ -176,7 +176,7 @@ Widget analyticsSkeleton() {
 Widget extrasSkeleton() {
   return Shimmer(
     child: ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 140),
       children: const [
         Skeleton(height: 160, radius: 24),
         SizedBox(height: 16),
@@ -191,7 +191,7 @@ Widget extrasSkeleton() {
 Widget settingsSkeleton() {
   return Shimmer(
     child: ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 140),
       children: const [
         Skeleton(height: 150, radius: 24),
         SizedBox(height: 16),

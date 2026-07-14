@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -152,10 +154,16 @@ class _HomePageState extends State<HomePage> {
     // First load (no cached transactions yet) → skeleton the whole tab.
     if (_data.txns == null && _data.error == null) return dashboardSkeleton();
     return RefreshIndicator(
-      onRefresh: _data.refresh,
+      // Fire-and-forget: returning immediately retracts the pull spinner
+      // instead of parking it over the meal-plan card for the whole refresh —
+      // the "Updated" pill right below already animates while the refresh is
+      // in flight.
+      onRefresh: () async {
+        unawaited(_data.refresh());
+      },
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 110),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 140),
         children: [
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
@@ -1434,7 +1442,7 @@ class _AnalyticsViewState extends State<_AnalyticsView> {
     final a = _Analytics.from(filteredTxns, balance);
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 140),
       children: [
         if (accounts.length > 1) ...[
           Wrap(
@@ -1481,14 +1489,10 @@ class _AnalyticsViewState extends State<_AnalyticsView> {
           // Keyed on the filter so switching accounts re-runs the chart's
           // draw-in animation with the new curve.
           _BalanceTrendCard(key: ValueKey(_account), a: a),
-          if (a.topMerchants.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            _TopMerchantsCard(a: a),
-          ],
-          if (a.hasPatterns) ...[
-            const SizedBox(height: 16),
-            _SpendingPatternsCard(a: a),
-          ],
+          const SizedBox(height: 16),
+          _TopMerchantsCard(txns: filteredTxns),
+          const SizedBox(height: 16),
+          _SpendingPatternsCard(txns: filteredTxns),
         ],
       ],
     );
@@ -1509,30 +1513,14 @@ class _Analytics {
 
   final int thisMonthCount;
 
-  /// Where the money went over the trailing 30 days: top 5 merchants by total
-  /// debited, with visit counts. Empty when there's no recent spending.
-  final List<({String name, double total, int count})> topMerchants;
-
-  /// Debit totals per weekday (index 0 = Monday) over the trailing 90 days.
-  final List<double> weekdaySpend;
-
-  /// Human phrase for the peak spending time of day ("around lunch"), or null
-  /// when too few rows carry a real timestamp to say anything.
-  final String? peakTimeLabel;
-
   const _Analytics({
     required this.balanceSeries,
     required this.thisMonthSpend,
     required this.typicalMonthSpend,
     required this.thisMonthCount,
-    required this.topMerchants,
-    required this.weekdaySpend,
-    required this.peakTimeLabel,
   });
 
   bool get isEmpty => balanceSeries.length < 2 && thisMonthSpend == 0;
-
-  bool get hasPatterns => weekdaySpend.any((v) => v > 0);
 
   factory _Analytics.from(List<Transaction> txns, double totalBalance) {
     final now = DateTime.now();
@@ -1562,13 +1550,6 @@ class _Analytics {
     final yearStart = DateTime(now.year - 1, now.month, 1);
     var pastYearSpend = 0.0;
     DateTime? firstDebitMonth;
-    final merchantCutoff = now.subtract(const Duration(days: 30));
-    final patternCutoff = now.subtract(const Duration(days: 90));
-    final byMerchant = <String, ({double total, int count})>{};
-    final weekdaySpend = List<double>.filled(7, 0);
-    // Time-of-day buckets: morning / lunch / afternoon / dinner / late night.
-    final bucketSpend = List<double>.filled(5, 0);
-    var patternDebits = 0, timedDebits = 0;
     for (final t in dated) {
       if (!t.isDebit) continue;
       final amt = -t.amountValue;
@@ -1580,51 +1561,6 @@ class _Analytics {
       } else if (!d.isBefore(yearStart)) {
         pastYearSpend += amt;
       }
-      if (d.isAfter(merchantCutoff)) {
-        final name = t.terminalLabel;
-        if (name.isNotEmpty) {
-          final prev = byMerchant[name] ?? (total: 0.0, count: 0);
-          byMerchant[name] = (total: prev.total + amt, count: prev.count + 1);
-        }
-      }
-      if (d.isAfter(patternCutoff)) {
-        weekdaySpend[d.weekday - 1] += amt;
-        patternDebits++;
-        // The site omits the time on some rows; parsedDate reads those as
-        // exactly midnight, so only real timestamps feed the buckets.
-        if (d.hour != 0 || d.minute != 0) {
-          timedDebits++;
-          bucketSpend[switch (d.hour) {
-            >= 6 && < 11 => 0, // morning
-            >= 11 && < 14 => 1, // lunch
-            >= 14 && < 17 => 2, // afternoon
-            >= 17 && < 21 => 3, // dinner
-            _ => 4, // late night
-          }] += amt;
-        }
-      }
-    }
-
-    final topMerchants = byMerchant.entries
-        .map((e) => (name: e.key, total: e.value.total, count: e.value.count))
-        .toList()
-      ..sort((x, y) => y.total.compareTo(x.total));
-
-    // Only call a peak time when at least half the recent debits are actually
-    // timestamped — otherwise the buckets are too sparse to trust.
-    String? peakTimeLabel;
-    if (timedDebits > 0 && timedDebits * 2 >= patternDebits) {
-      var peak = 0;
-      for (var i = 1; i < bucketSpend.length; i++) {
-        if (bucketSpend[i] > bucketSpend[peak]) peak = i;
-      }
-      peakTimeLabel = const [
-        "in the morning",
-        "around lunch",
-        "in the afternoon",
-        "around dinner",
-        "late at night",
-      ][peak];
     }
 
     // Typical month = average monthly spend over the past year's completed
@@ -1642,9 +1578,6 @@ class _Analytics {
       thisMonthSpend: thisMonthSpend,
       typicalMonthSpend: typicalMonth,
       thisMonthCount: thisMonthCount,
-      topMerchants: topMerchants.take(5).toList(),
-      weekdaySpend: weekdaySpend,
-      peakTimeLabel: peakTimeLabel,
     );
   }
 }
@@ -1726,16 +1659,108 @@ class _MonthSummaryCard extends StatelessWidget {
   }
 }
 
-/// Top 5 merchants over the past 30 days, each with a proportion bar scaled
-/// to the biggest spender on the list.
-class _TopMerchantsCard extends StatelessWidget {
-  final _Analytics a;
-  const _TopMerchantsCard({required this.a});
+/// The selectable trailing window for the Top places / Spending patterns
+/// cards. Null days = all time.
+enum _StatsWindow {
+  d30(days: 30, label: "30 days"),
+  d90(days: 90, label: "90 days"),
+  year(days: 365, label: "Past year"),
+  all(days: null, label: "All time");
+
+  final int? days;
+  final String label;
+  const _StatsWindow({required this.days, required this.label});
+
+  /// Start of the window ending at [now], or null for all time.
+  DateTime? cutoff(DateTime now) {
+    final w = days;
+    return w == null ? null : now.subtract(Duration(days: w));
+  }
+
+  /// Whether [d] falls inside the window ending at [now].
+  bool contains(DateTime d, DateTime now) {
+    final c = cutoff(now);
+    return c == null || d.isAfter(c);
+  }
+}
+
+/// The compact "30 days ▾" window filter in a stats card's top-right corner.
+class _WindowMenu extends StatelessWidget {
+  final _StatsWindow value;
+  final ValueChanged<_StatsWindow> onChanged;
+  const _WindowMenu({required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final max = a.topMerchants.first.total;
+    return PopupMenuButton<_StatsWindow>(
+      initialValue: value,
+      onSelected: onChanged,
+      itemBuilder: (context) => [
+        for (final w in _StatsWindow.values)
+          PopupMenuItem(value: w, child: Text(w.label)),
+      ],
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            value.label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          Icon(
+            Icons.arrow_drop_down,
+            size: 18,
+            color: scheme.onSurfaceVariant,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Top 5 merchants in the selected window, each with a proportion bar scaled
+/// to the biggest spender on the list.
+class _TopMerchantsCard extends StatefulWidget {
+  /// The tab's (account-filtered) transactions.
+  final List<Transaction> txns;
+  const _TopMerchantsCard({required this.txns});
+
+  @override
+  State<_TopMerchantsCard> createState() => _TopMerchantsCardState();
+}
+
+class _TopMerchantsCardState extends State<_TopMerchantsCard> {
+  _StatsWindow _window = _StatsWindow.d30;
+
+  List<({String name, double total, int count})> _top() {
+    final now = DateTime.now();
+    final byMerchant = <String, ({double total, int count})>{};
+    for (final t in widget.txns) {
+      if (!t.isDebit) continue;
+      final d = t.parsedDate;
+      if (d == null || !_window.contains(d, now)) continue;
+      final name = t.terminalLabel;
+      if (name.isEmpty) continue;
+      final prev = byMerchant[name] ?? (total: 0.0, count: 0);
+      byMerchant[name] =
+          (total: prev.total - t.amountValue, count: prev.count + 1);
+    }
+    final ranked = byMerchant.entries
+        .map((e) => (name: e.key, total: e.value.total, count: e.value.count))
+        .toList()
+      ..sort((x, y) => y.total.compareTo(x.total));
+    return ranked.take(5).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final top = _top();
+    final max = top.isEmpty ? 0.0 : top.first.total;
 
     return Container(
       width: double.infinity,
@@ -1747,17 +1772,34 @@ class _TopMerchantsCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "TOP PLACES · PAST 30 DAYS",
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 1.1,
-              color: scheme.onSurfaceVariant,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  "TOP PLACES",
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.1,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              _WindowMenu(
+                value: _window,
+                onChanged: (w) => setState(() => _window = w),
+              ),
+            ],
           ),
-          const SizedBox(height: 6),
-          for (final m in a.topMerchants) ...[
+          if (top.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text(
+                "No purchases in this period",
+                style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+              ),
+            ),
+          for (final m in top) ...[
             const SizedBox(height: 10),
             Row(
               children: [
@@ -1809,11 +1851,20 @@ class _TopMerchantsCard extends StatelessWidget {
   }
 }
 
-/// Debit totals per weekday (trailing 90 days) as mini bars, plus a caption
-/// naming the peak day and — when timestamps allow — the peak time of day.
-class _SpendingPatternsCard extends StatelessWidget {
-  final _Analytics a;
-  const _SpendingPatternsCard({required this.a});
+/// Debit totals per weekday in the selected window as mini bars, plus a
+/// caption naming the peak day and — when timestamps allow — the peak time of
+/// day.
+class _SpendingPatternsCard extends StatefulWidget {
+  /// The tab's (account-filtered) transactions.
+  final List<Transaction> txns;
+  const _SpendingPatternsCard({required this.txns});
+
+  @override
+  State<_SpendingPatternsCard> createState() => _SpendingPatternsCardState();
+}
+
+class _SpendingPatternsCardState extends State<_SpendingPatternsCard> {
+  _StatsWindow _window = _StatsWindow.d90;
 
   static const _dayLetters = ["M", "T", "W", "T", "F", "S", "S"];
   static const _dayNames = [
@@ -1826,14 +1877,63 @@ class _SpendingPatternsCard extends StatelessWidget {
     "Sundays",
   ];
 
+  /// Debit totals per weekday (index 0 = Monday) in the window, plus the peak
+  /// time-of-day phrase — null when too few rows carry a real timestamp.
+  (List<double>, String?) _patterns() {
+    final now = DateTime.now();
+    final weekdaySpend = List<double>.filled(7, 0);
+    // Time-of-day buckets: morning / lunch / afternoon / dinner / late night.
+    final bucketSpend = List<double>.filled(5, 0);
+    var debits = 0, timedDebits = 0;
+    for (final t in widget.txns) {
+      if (!t.isDebit) continue;
+      final d = t.parsedDate;
+      if (d == null || !_window.contains(d, now)) continue;
+      final amt = -t.amountValue;
+      weekdaySpend[d.weekday - 1] += amt;
+      debits++;
+      // The site omits the time on some rows; parsedDate reads those as
+      // exactly midnight, so only real timestamps feed the buckets.
+      if (d.hour != 0 || d.minute != 0) {
+        timedDebits++;
+        bucketSpend[switch (d.hour) {
+          >= 6 && < 11 => 0, // morning
+          >= 11 && < 14 => 1, // lunch
+          >= 14 && < 17 => 2, // afternoon
+          >= 17 && < 21 => 3, // dinner
+          _ => 4, // late night
+        }] += amt;
+      }
+    }
+
+    // Only call a peak time when at least half the window's debits are
+    // actually timestamped — otherwise the buckets are too sparse to trust.
+    String? peakTimeLabel;
+    if (timedDebits > 0 && timedDebits * 2 >= debits) {
+      var peak = 0;
+      for (var i = 1; i < bucketSpend.length; i++) {
+        if (bucketSpend[i] > bucketSpend[peak]) peak = i;
+      }
+      peakTimeLabel = const [
+        "in the morning",
+        "around lunch",
+        "in the afternoon",
+        "around dinner",
+        "late at night",
+      ][peak];
+    }
+    return (weekdaySpend, peakTimeLabel);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final (weekdaySpend, peakTimeLabel) = _patterns();
     var peak = 0;
     var max = 0.0;
     for (var i = 0; i < 7; i++) {
-      if (a.weekdaySpend[i] > max) {
-        max = a.weekdaySpend[i];
+      if (weekdaySpend[i] > max) {
+        max = weekdaySpend[i];
         peak = i;
       }
     }
@@ -1848,100 +1948,100 @@ class _SpendingPatternsCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "SPENDING PATTERNS · PAST 90 DAYS",
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 1.1,
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 16),
           Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              for (var i = 0; i < 7; i++)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: Column(
-                      children: [
-                        SizedBox(
-                          height: 64,
-                          child: Align(
-                            alignment: Alignment.bottomCenter,
-                            child: FractionallySizedBox(
-                              heightFactor: max <= 0
-                                  ? 0.04
-                                  : (a.weekdaySpend[i] / max).clamp(0.04, 1.0),
-                              child: Container(
-                                width: double.infinity,
-                                decoration: BoxDecoration(
-                                  color: i == peak
-                                      ? scheme.primary
-                                      : scheme.primaryContainer,
-                                  borderRadius: const BorderRadius.vertical(
-                                    top: Radius.circular(4),
+              Expanded(
+                child: Text(
+                  "SPENDING PATTERNS",
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.1,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              _WindowMenu(
+                value: _window,
+                onChanged: (w) => setState(() => _window = w),
+              ),
+            ],
+          ),
+          if (max <= 0) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text(
+                "No purchases in this period",
+                style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+              ),
+            ),
+          ] else ...[
+            const SizedBox(height: 16),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                for (var i = 0; i < 7; i++)
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Column(
+                        children: [
+                          SizedBox(
+                            height: 64,
+                            child: Align(
+                              alignment: Alignment.bottomCenter,
+                              child: FractionallySizedBox(
+                                heightFactor:
+                                    (weekdaySpend[i] / max).clamp(0.04, 1.0),
+                                child: Container(
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    color: i == peak
+                                        ? scheme.primary
+                                        : scheme.primaryContainer,
+                                    borderRadius: const BorderRadius.vertical(
+                                      top: Radius.circular(4),
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          _dayLetters[i],
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight:
-                                i == peak ? FontWeight.w700 : FontWeight.w500,
-                            color: i == peak
-                                ? scheme.onSurface
-                                : scheme.onSurfaceVariant,
+                          const SizedBox(height: 6),
+                          Text(
+                            _dayLetters[i],
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: i == peak
+                                  ? FontWeight.w700
+                                  : FontWeight.w500,
+                              color: i == peak
+                                  ? scheme.onSurface
+                                  : scheme.onSurfaceVariant,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            "Most spending on ${_dayNames[peak]}"
-            "${a.peakTimeLabel == null ? '' : ' · usually ${a.peakTimeLabel}'}",
-            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
-          ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              "Most spending on ${_dayNames[peak]}"
+              "${peakTimeLabel == null ? '' : ' · usually $peakTimeLabel'}",
+              style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-/// The selectable window for the balance chart.
-enum _ChartSpan {
-  week(days: 7, label: "Week"),
-  month(days: 30, label: "Month"),
-  ytd(days: null, label: "YTD"),
-  year(days: 365, label: "Year");
-
-  /// Trailing-window length, or null for the calendar year-to-date window.
-  final int? days;
-  final String label;
-  const _ChartSpan({required this.days, required this.label});
-
-  /// Start of the window that ends at [now]: a fixed number of days back, or
-  /// January 1 for YTD.
-  DateTime cutoff(DateTime now) {
-    final d = days;
-    return d == null ? DateTime(now.year) : now.subtract(Duration(days: d));
-  }
-}
-
-/// The reconstructed balance-over-time line chart in a titled card, with a
-/// Week / Month / YTD / Year span selector (default: last month) and labelled
-/// axes.
+/// The reconstructed balance-over-time line chart in a titled card, with the
+/// same top-right window filter as the stats cards (default: 30 days) and
+/// labelled axes.
 class _BalanceTrendCard extends StatefulWidget {
   final _Analytics a;
   const _BalanceTrendCard({super.key, required this.a});
@@ -1951,14 +2051,16 @@ class _BalanceTrendCard extends StatefulWidget {
 }
 
 class _BalanceTrendCardState extends State<_BalanceTrendCard> {
-  _ChartSpan _span = _ChartSpan.month;
+  _StatsWindow _window = _StatsWindow.d30;
 
-  /// The series clipped to the selected span. Balance is a step function, so
-  /// a synthetic point is prepended at the cutoff carrying the last value from
-  /// before it — the line always spans the full window, even for a quiet week.
+  /// The series clipped to the selected window (all time = uncut). Balance is
+  /// a step function, so a synthetic point is prepended at the cutoff carrying
+  /// the last value from before it — the line always spans the full window,
+  /// even for a quiet month.
   List<({DateTime date, double value})> _windowed() {
     final all = widget.a.balanceSeries;
-    final cutoff = _span.cutoff(DateTime.now());
+    final cutoff = _window.cutoff(DateTime.now());
+    if (cutoff == null) return all;
     final inWindow = all.where((p) => p.date.isAfter(cutoff)).toList();
     ({DateTime date, double value})? boundary;
     for (final p in all) {
@@ -1968,14 +2070,16 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
     return [?boundary, ...inWindow];
   }
 
-  /// X-axis tick label, formatted for the window's actual length: month-only
-  /// once it spans several months (Year always; YTD from spring onward).
-  String _tick(DateTime d) {
-    final now = DateTime.now();
-    final monthsOnly = now.difference(_span.cutoff(now)).inDays > 120;
-    return monthsOnly
-        ? _monthAbbr[d.month - 1]
-        : "${_monthAbbr[d.month - 1]} ${d.day}";
+  /// X-axis tick label: month-only once the window spans several months, and
+  /// month + year ("Sep 2026") when the plotted range crosses a year boundary
+  /// so identical month names can't collide.
+  String _tick(DateTime d, bool multiYear) {
+    final days = _window.days;
+    final monthsOnly = days == null || days > 120;
+    if (!monthsOnly) return "${_monthAbbr[d.month - 1]} ${d.day}";
+    return multiYear
+        ? "${_monthAbbr[d.month - 1]} ${d.year}"
+        : _monthAbbr[d.month - 1];
   }
 
   @override
@@ -1983,6 +2087,8 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
     final scheme = Theme.of(context).colorScheme;
     var pts = _windowed();
     if (pts.length < 2) pts = widget.a.balanceSeries;
+    final multiYear =
+        pts.length >= 2 && pts.first.date.year != pts.last.date.year;
 
     return Container(
       width: double.infinity,
@@ -1994,14 +2100,24 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "BALANCE OVER TIME",
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 1.1,
-              color: scheme.onSurfaceVariant,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  "BALANCE OVER TIME",
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.1,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              _WindowMenu(
+                value: _window,
+                onChanged: (w) => setState(() => _window = w),
+              ),
+            ],
           ),
           const SizedBox(height: 14),
           if (pts.length < 2)
@@ -2022,9 +2138,9 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
               height: 190,
               width: double.infinity,
               // Micro-animation: the line draws itself left-to-right when the
-              // chart appears or the span changes (keyed on the span).
+              // chart appears or the window changes (keyed on the window).
               child: TweenAnimationBuilder<double>(
-                key: ValueKey(_span),
+                key: ValueKey(_window),
                 tween: Tween(begin: 0, end: 1),
                 duration: const Duration(milliseconds: 700),
                 curve: Curves.easeOutCubic,
@@ -2038,24 +2154,12 @@ class _BalanceTrendCardState extends State<_BalanceTrendCard> {
                       fontSize: 10,
                       color: scheme.onSurfaceVariant,
                     ),
-                    xTickLabel: _tick,
+                    xTickLabel: (d) => _tick(d, multiYear),
                     progress: progress,
                   ),
                 ),
               ),
             ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            children: [
-              for (final s in _ChartSpan.values)
-                ChoiceChip(
-                  label: Text(s.label),
-                  selected: _span == s,
-                  onSelected: (_) => setState(() => _span = s),
-                ),
-            ],
-          ),
         ],
       ),
     );
@@ -2481,7 +2585,7 @@ class _ExtrasViewState extends State<_ExtrasView> {
     if (_loading) return extrasSkeleton();
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 140),
       children: [
         _SectionCard(
           title: "MEAL PLAN",
@@ -2717,7 +2821,7 @@ class _SettingsViewState extends State<_SettingsView> {
     if (_loading) return settingsSkeleton();
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 140),
       children: [
         _SectionCard(
           title: "THEME",
