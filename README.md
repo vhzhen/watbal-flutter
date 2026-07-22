@@ -10,6 +10,8 @@ Android is the primary platform; iOS has native widget and background refresh su
   <img src="assets/samples/dashboard.png" width="300" alt="Dashboard">
   &nbsp;&nbsp;
   <img src="assets/samples/transactions.png" width="300" alt="Transactions">
+  &nbsp;&nbsp;
+  <img src="assets/samples/analytics.png" width="300" alt="Analytics">
 </p>
 
 ## Features
