@@ -4,6 +4,14 @@ A Flutter app for University of Waterloo students to track meal plan balances an
 
 Android is the primary platform; iOS has native widget and background refresh support but is lower priority.
 
+## Screenshots
+
+<p align="center">
+  <img src="assets/samples/dashboard.png" width="300" alt="Dashboard">
+  &nbsp;&nbsp;
+  <img src="assets/samples/transactions.png" width="300" alt="Transactions">
+</p>
+
 ## Features
 
 - **Account balances** — scrapes all WatCard accounts (Flex, Meal Plan, etc.) and displays them as tappable hero cards
