@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -368,6 +369,56 @@ Future<String?> trySilentReauth() async {
 
 // ───────────────────────────── visible login popup ─────────────────────────
 
+/// JS injected into the login WebView to make Google Password Manager offer
+/// saved credentials.
+///
+/// Chrome autofills the UW ADFS page (`adfs.uwaterloo.ca`) fine because it uses
+/// its own heuristic password manager. Our WebView instead goes through the
+/// Android *Autofill framework*, which is stricter: it only offers a credential
+/// when it can classify the field, and it classifies primarily from the
+/// field's `autocomplete` attribute. The ADFS form (a paginated
+/// username → Next → password flow) ships its inputs without those hints, so
+/// the framework never recognises them and no suggestion appears.
+///
+/// This script adds the missing hints — `username` on the email/user field,
+/// `current-password` on the password field — and re-applies them via a
+/// MutationObserver so the password step (rendered after "Next" without a full
+/// navigation) is covered too. It is deliberately conservative: it only *adds*
+/// an attribute when one is absent, and never focuses a field, mutates a value,
+/// or submits the form.
+const String _autofillHintScript = r'''
+(function () {
+  function hint(el, value) {
+    try {
+      if (el && !el.getAttribute('autocomplete')) {
+        el.setAttribute('autocomplete', value);
+      }
+    } catch (e) {}
+  }
+  function annotate() {
+    document.querySelectorAll('input[type="password"]').forEach(function (p) {
+      hint(p, 'current-password');
+    });
+    var candidates = document.querySelectorAll(
+      'input[type="email"], input[type="text"], input:not([type])'
+    );
+    candidates.forEach(function (u) {
+      var key = ((u.name || '') + ' ' + (u.id || '')).toLowerCase();
+      if (u.type === 'email' || /user|email|login|upn|account/.test(key)) {
+        hint(u, 'username');
+      }
+    });
+  }
+  annotate();
+  try {
+    new MutationObserver(annotate).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+  } catch (e) {}
+})();
+''';
+
 /// Full-height login popup. An opaque cover sits over the WebView so the
 /// authenticated Dashboard is never briefly visible: the user sees the
 /// spinner, then the actual login page, then the popup closes.
@@ -512,16 +563,36 @@ class _LoginWebViewState extends State<LoginWebView> {
         children: [
           InAppWebView(
             initialUrlRequest: URLRequest(url: WebUri(_dashboardUrl)),
+            // Inject autofill hints at document-end on every navigation so the
+            // Android Autofill framework recognises the ADFS username/password
+            // fields (see [_autofillHintScript]).
+            initialUserScripts: UnmodifiableListView<UserScript>([
+              UserScript(
+                source: _autofillHintScript,
+                injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
+              ),
+            ]),
             initialSettings: InAppWebViewSettings(
               cacheEnabled: true,
               isFraudulentWebsiteWarningEnabled: true,
-              // Password autofill: on Android O+ the system autofill service
-              // (e.g. Google Password Manager) fills WebView login forms, but
-              // only when the WebView is a real view in the hierarchy — that's
-              // hybrid composition. Both are package defaults; set explicitly so
-              // saved-password autofill can't regress if a default changes.
-              // saveFormData lets the login also *offer* to save new passwords.
+              // Password autofill on Android O+ is handled by the system
+              // Autofill framework (Google Password Manager et al.), not by the
+              // WebView itself. Two things must hold for the suggestion strip to
+              // appear over a WebView login form:
+              //   1. The WebView is a *real* view in the hierarchy — that's
+              //      hybrid composition (below). Virtual-display WebViews get no
+              //      autofill.
+              //   2. The hosting Activity is important for autofill —
+              //      `android:importantForAutofill="yes"` on MainActivity in the
+              //      manifest. (There must also be no FLAG_SECURE on the window,
+              //      which would suppress autofill; we don't set it.)
+              // JavaScript stays on (default) so the site's forms — and the
+              // autofill hints the framework reads off them — behave normally.
+              // NOTE: `saveFormData` is the legacy pre-O WebView form-save flag
+              // and is a no-op on Android 8+; kept only for old devices. It does
+              // NOT drive Autofill-framework suggestions.
               useHybridComposition: true,
+              javaScriptEnabled: true,
               saveFormData: true,
             ),
             onProgressChanged: (_, p) => setState(() => _progress = p / 100),
