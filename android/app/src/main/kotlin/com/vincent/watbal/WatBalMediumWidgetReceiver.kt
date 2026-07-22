@@ -1,4 +1,4 @@
-package com.example.watbal
+package com.vincent.watbal
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
@@ -13,12 +13,11 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-/// Compact 1x1 home-screen widget: just the "WatBal" title, the balance, and
-/// the "Updated …" time — no transaction list. Reads the same shared keys the
-/// Flutter side writes (`balance_text`, `last_updated`, `app_theme`) and reuses
-/// [WidgetTheme] from WatBalWidgetReceiver. The Dart `updateWidget` call
-/// resolves this as `<applicationId>.WatBalSmallWidgetReceiver`.
-class WatBalSmallWidgetReceiver : HomeWidgetProvider() {
+/// 2x2 home-screen widget — identical content to [WatBalSmallWidgetReceiver]
+/// (title, balance, "Updated …") on a larger layout. Reads the same shared keys
+/// and reuses [WidgetTheme]. The Dart `updateWidget` call resolves this as
+/// `<applicationId>.WatBalMediumWidgetReceiver`.
+class WatBalMediumWidgetReceiver : HomeWidgetProvider() {
 
     override fun onUpdate(
         context: Context,
@@ -33,11 +32,11 @@ class WatBalSmallWidgetReceiver : HomeWidgetProvider() {
 
         Log.d(
             "WatBalWidget",
-            "small onUpdate ids=${appWidgetIds.toList()} balance=$balance \"$updated\"",
+            "medium onUpdate ids=${appWidgetIds.toList()} balance=$balance \"$updated\"",
         )
 
         for (id in appWidgetIds) {
-            val views = RemoteViews(context.packageName, R.layout.watbal_widget_small)
+            val views = RemoteViews(context.packageName, R.layout.watbal_widget_medium)
 
             views.setInt(R.id.widget_root, "setBackgroundResource", theme.backgroundRes)
             views.setTextViewText(R.id.widget_title, label)
@@ -62,8 +61,7 @@ class WatBalSmallWidgetReceiver : HomeWidgetProvider() {
         }
     }
 
-    /// "Updated 3:45 PM" today, "Updated Jun 14" otherwise — matches the full
-    /// widget.
+    /// "Updated 3:45 PM" today, "Updated Jun 14" otherwise — matches the others.
     private fun formatUpdated(raw: String?): String {
         val ms = raw?.toDoubleOrNull() ?: return ""
         val date = Date(ms.toLong())

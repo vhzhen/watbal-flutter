@@ -17,8 +17,9 @@ import 'package:watbal/scraper.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Migrate any session saved by an older build into the iOS shared app group
-  // so the native widget-refresh task can read it. Idempotent.
+  // loadSession migrates any pre-secure-storage plaintext session into secure
+  // storage; re-saving then refreshes the iOS app-group mirror the native
+  // widget-refresh task reads. Idempotent and safe when no session exists.
   final cookies = await loadSession();
   if (cookies != null && cookies.isNotEmpty) await saveSession(cookies);
 

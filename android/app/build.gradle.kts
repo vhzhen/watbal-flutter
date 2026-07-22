@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -5,8 +8,19 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Release signing is loaded from android/key.properties, which is git-ignored
+// so the keystore path + passwords never enter source control (a Play Store
+// requirement). When the file is absent — fresh clone, CI, or day-to-day debug
+// work — we fall back to debug signing below so `flutter run` still works.
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseSigning = keystorePropertiesFile.exists()
+if (hasReleaseSigning) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 android {
-    namespace = "com.example.watbal"
+    namespace = "com.vincent.watbal"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,8 +34,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.watbal"
+        // Real, unique application ID (matches the iOS bundle / app group family
+        // `com.vincent.watbal`). Google Play rejects the `com.example.*` default.
+        applicationId = "com.vincent.watbal"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -30,11 +45,30 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        // Only define the release signing config when key.properties is present;
+        // otherwise there's nothing to sign with and referencing empty values
+        // would fail the configuration phase.
+        if (hasReleaseSigning) {
+            create("release") {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = keystoreProperties["storeFile"]?.let { file(it) }
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Sign with the real release key when configured (Play uploads);
+            // fall back to debug signing so `flutter run --release` and fresh
+            // clones without the keystore still build.
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

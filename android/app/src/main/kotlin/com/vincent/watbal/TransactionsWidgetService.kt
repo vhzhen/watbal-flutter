@@ -1,4 +1,4 @@
-package com.example.watbal
+package com.vincent.watbal
 
 import android.content.Context
 import android.content.Intent

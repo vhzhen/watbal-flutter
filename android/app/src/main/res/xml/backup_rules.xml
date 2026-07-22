@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Backup is already disabled app-wide via android:allowBackup="false". These
+  rules (used on Android 11 and below) are a defensive backstop: even if backup
+  is ever re-enabled, the session cookie store (flutter_secure_storage's
+  EncryptedSharedPreferences file) and the debug log must never be uploaded to
+  the user's cloud backup. Everything here is device-specific or re-derivable
+  (session re-auths, caches re-sync), so excluding all app data is safe.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="." />
+</full-backup-content>

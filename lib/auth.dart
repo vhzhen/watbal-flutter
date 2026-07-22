@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart' as fss;
 import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,7 +12,11 @@ import 'package:watbal/scraper.dart';
 const String _dashboardUrl =
     "https://secure.touchnet.net/C22566_oneweb/Account/Dashboard";
 const String _appGroupId = 'group.com.vincent.watbal';
-const String _prefsKey = 'session_cookies';
+
+/// Storage key for the session cookie header. Historically this named a
+/// plaintext SharedPreferences entry; it's now the flutter_secure_storage key
+/// (and the iOS app-group key the native widget task still reads).
+const String _sessionKey = 'session_cookies';
 
 // ───────────────────────────── cookie persistence ──────────────────────────
 
@@ -36,30 +42,21 @@ Future<String?> _harvestCookieHeader() async {
       .join("; ");
 }
 
-/// Persists the cookie header in two stores: SharedPreferences for the Dart
-/// code, and the iOS shared app group so the native widget-refresh task can
-/// read it without bridging Flutter.
-Future<void> saveSession(String header) async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.setString(_prefsKey, header);
-  try {
-    await HomeWidget.setAppGroupId(_appGroupId);
-    await HomeWidget.saveWidgetData<String>(_prefsKey, header);
-  } catch (_) {
-    // Android dev / no app group — non-fatal.
-  }
-}
+/// Persists the cookie header. It lives in the platform keystore/keychain via
+/// flutter_secure_storage — never plaintext SharedPreferences — because the
+/// header carries the SSO/DUO cookies that can silently re-mint a full account
+/// session. On iOS it is *also* mirrored into the shared app group so the
+/// native widget-refresh task (BalanceRefresher.swift) can read it without a
+/// Flutter engine; on Android nothing native consumes it, so it is not
+/// mirrored (that would only leak the secret into plaintext widget prefs).
+Future<void> saveSession(String header) => _sessionStore.save(header);
 
-/// Clears the session from both stores plus the WebView's cookie jar. The
-/// jar matters: leaving `.ASPXAUTH` behind would let the next "sign in" pop
-/// straight back into the account.
+/// Clears the session from secure storage (plus the iOS app-group mirror and
+/// any legacy plaintext copy), then the WebView's cookie jar. The jar matters:
+/// leaving `.ASPXAUTH` behind would let the next "sign in" pop straight back
+/// into the account.
 Future<void> clearSession() async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.remove(_prefsKey);
-  try {
-    await HomeWidget.setAppGroupId(_appGroupId);
-    await HomeWidget.saveWidgetData<String>(_prefsKey, null);
-  } catch (_) {}
+  await _sessionStore.clear();
   // Cached transactions / account map belong to this login; a different user
   // signing in next must not inherit (or merge into) them. The meal-plan
   // selection + term dates are intentionally *kept* so a returning user doesn't
@@ -68,10 +65,146 @@ Future<void> clearSession() async {
   await CookieManager.instance().deleteAllCookies();
 }
 
-Future<String?> loadSession() async {
-  final prefs = await SharedPreferences.getInstance();
-  return prefs.getString(_prefsKey);
+Future<String?> loadSession() => _sessionStore.load();
+
+// ─────────────────────────── session persistence ───────────────────────────
+
+/// Single-value key/value contract backing the session cookie header. Kept
+/// deliberately tiny so the migration + mirroring logic in [SessionStore] can
+/// be unit-tested against in-memory fakes instead of platform channels.
+abstract class SessionValueStore {
+  Future<String?> read();
+  Future<void> write(String value);
+  Future<void> delete();
 }
+
+/// Coordinates where the cookie header is stored: the secure store is the
+/// source of truth, a legacy plaintext store is migrated-then-scrubbed, and an
+/// optional mirror feeds the iOS native refresher.
+class SessionStore {
+  SessionStore({
+    required SessionValueStore secure,
+    required SessionValueStore legacy,
+    SessionValueStore? mirror,
+  })  : _secure = secure,
+        _legacy = legacy,
+        _mirror = mirror;
+
+  final SessionValueStore _secure;
+
+  /// Legacy plaintext SharedPreferences entry from pre-secure-storage builds.
+  /// Read + deleted only, never written — it exists solely to migrate off.
+  final SessionValueStore _legacy;
+
+  /// iOS app-group mirror for the native BGAppRefreshTask; null on Android.
+  final SessionValueStore? _mirror;
+
+  Future<void> save(String header) async {
+    await _secure.write(header);
+    await _mirror?.write(header);
+    // Never leave a plaintext copy behind.
+    await _legacy.delete();
+  }
+
+  Future<String?> load() async {
+    final secure = await _secure.read();
+    if (secure != null && secure.isNotEmpty) return secure;
+    // Migrate a session written by an older plaintext build, then scrub it.
+    final legacy = await _legacy.read();
+    if (legacy != null && legacy.isNotEmpty) {
+      await _secure.write(legacy);
+      await _mirror?.write(legacy);
+      await _legacy.delete();
+      return legacy;
+    }
+    return null;
+  }
+
+  Future<void> clear() async {
+    await _secure.delete();
+    await _mirror?.delete();
+    await _legacy.delete();
+  }
+}
+
+/// flutter_secure_storage-backed store (Android Keystore / iOS Keychain).
+class _SecureValueStore implements SessionValueStore {
+  const _SecureValueStore();
+
+  static final fss.FlutterSecureStorage _storage = const fss.FlutterSecureStorage(
+    aOptions: fss.AndroidOptions(encryptedSharedPreferences: true),
+    iOptions:
+        fss.IOSOptions(accessibility: fss.KeychainAccessibility.first_unlock),
+  );
+
+  @override
+  Future<String?> read() => _storage.read(key: _sessionKey);
+
+  @override
+  Future<void> write(String value) =>
+      _storage.write(key: _sessionKey, value: value);
+
+  @override
+  Future<void> delete() => _storage.delete(key: _sessionKey);
+}
+
+/// Legacy plaintext SharedPreferences entry — migration source only.
+class _LegacyPrefsValueStore implements SessionValueStore {
+  const _LegacyPrefsValueStore();
+
+  @override
+  Future<String?> read() async =>
+      (await SharedPreferences.getInstance()).getString(_sessionKey);
+
+  @override
+  Future<void> write(String value) async =>
+      (await SharedPreferences.getInstance()).setString(_sessionKey, value);
+
+  @override
+  Future<void> delete() async =>
+      (await SharedPreferences.getInstance()).remove(_sessionKey);
+}
+
+/// iOS shared app-group store, read by the native widget-refresh task.
+class _AppGroupValueStore implements SessionValueStore {
+  const _AppGroupValueStore();
+
+  @override
+  Future<String?> read() async => null; // Written for native; not read in Dart.
+
+  @override
+  Future<void> write(String value) async {
+    try {
+      await HomeWidget.setAppGroupId(_appGroupId);
+      await HomeWidget.saveWidgetData<String>(_sessionKey, value);
+    } catch (_) {
+      // No app group configured — non-fatal; secure storage is the source of
+      // truth and the native path simply won't refresh until next save.
+    }
+  }
+
+  @override
+  Future<void> delete() async {
+    try {
+      await HomeWidget.setAppGroupId(_appGroupId);
+      await HomeWidget.saveWidgetData<String>(_sessionKey, null);
+    } catch (_) {}
+  }
+}
+
+/// Process-wide session store. Overridable in tests via [debugSetSessionStore].
+SessionStore _sessionStore = SessionStore(
+  secure: const _SecureValueStore(),
+  legacy: const _LegacyPrefsValueStore(),
+  // Only iOS needs the app-group copy (its native BGAppRefreshTask reads it);
+  // mirroring on Android would just leak the secret into plaintext widget prefs
+  // that nothing reads.
+  mirror: Platform.isIOS ? const _AppGroupValueStore() : null,
+);
+
+/// Test seam: swap in a [SessionStore] backed by in-memory fakes.
+@visibleForTesting
+void debugSetSessionStore(SessionStore store) => _sessionStore = store;
 
 /// Deletes every cookie the WebView jar holds for the TouchNet host, leaving
 /// the IdP / DUO "remember this device" cookies (a different domain) untouched.
@@ -191,6 +324,10 @@ Future<String?> trySilentReauth() async {
       cacheEnabled: true,
       javaScriptEnabled: true,
       sharedCookiesEnabled: true,
+      // Match the visible login's safe-browsing check: even though this flow
+      // starts from a fixed HTTPS URL, a hijacked redirect in the SSO chain
+      // shouldn't be silently followed while we're replaying live cookies.
+      isFraudulentWebsiteWarningEnabled: true,
     ),
     onLoadStop: (c, url) => evaluate(c, url),
     onUpdateVisitedHistory: (c, url, _) => evaluate(c, url),

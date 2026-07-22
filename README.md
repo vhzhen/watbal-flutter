@@ -25,32 +25,6 @@ Android is the primary platform; iOS has native widget and background refresh su
 - **Theming** — Light, Dark, Purple, and Gold (UWaterloo brand) themes using Material 3, with UWaterloo brand fonts (Typ1451 + Bureau Grot)
 - **Password autofill** — integrates with system credential managers (Google Password Manager on Android, Keychain on iOS)
 
-## How It Works
-
-### Authentication
-
-1. **First launch:** an in-app WebView opens the TouchNet OneWeb dashboard. Login success is detected by the `.ASPXAUTH` cookie, and the full cookie header is saved.
-2. **Subsequent launches:** the app scrapes headlessly with saved cookies — no WebView needed.
-3. **Session expiry:** detected when the dashboard response lacks `__RequestVerificationToken`. The app silently re-authenticates using the longer-lived university SSO/DUO cookies in the WebView cookie jar — no password re-entry required.
-4. **Cookie hygiene:** rotating `__RequestVerificationToken_*` cookies are pruned on re-auth to prevent header overflow (which causes 400 errors).
-
-### Scraping
-
-1. `GET /Account/Dashboard` — parse the request verification token
-2. `POST /Layout/KeepAlive` — reset the sliding session window (~15 min)
-3. `POST /Deposit/Home/Balances` — parse all account balances
-4. `POST /TransactionHistory/TransactionsPass` — incremental transaction sync (fetches only since the newest cached row)
-5. `POST /TransactionHistory/CurrentStatement` — maps account names to balance IDs for per-account filtering
-
-### Background Refresh
-
-| Platform | Mechanism | Notes |
-|----------|-----------|-------|
-| Android | WorkManager periodic task (15-min floor) | Can silently re-auth via headless WebView in background isolate |
-| iOS | `BGAppRefreshTask` (native Swift, primary) + WorkManager one-off (fallback) | Native path uses URLSession only — cannot re-auth without app open |
-
-Both are OS-throttled. Not real-time.
-
 ## Project Structure
 
 ```

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (targetSdk 31+) backup/transfer rules. Backup is already disabled
+  via android:allowBackup="false"; these exclusions are a defensive backstop so
+  the session cookie store and debug log are never exfiltrated through cloud
+  backup or device-to-device transfer even if backup is re-enabled. All app
+  data here is device-specific or re-derivable.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+    </device-transfer>
+</data-extraction-rules>
