@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:watbal/auth.dart';
+import 'package:watbal/demo_data.dart';
 import 'package:watbal/scraper.dart';
 
 /// Cold-start / session-lost page. The order of fallbacks is the entire UX
@@ -110,6 +111,84 @@ class _LoadingPageState extends State<LoadingPage> {
     }
   }
 
+  /// Demo sign-in, for Google Play's app-review credentials. Accepts only
+  /// [kDemoUsername] / [kDemoPassword]; anything else is rejected so this can't
+  /// be mistaken for a real sign-in form. On success the app switches to the
+  /// fabricated demo dataset and makes no further network requests.
+  Future<void> _showDemoSignIn() async {
+    final userController = TextEditingController();
+    final passController = TextEditingController();
+    String? errorText;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          void submit() {
+            if (isDemoLogin(userController.text, passController.text)) {
+              Navigator.of(dialogContext).pop(true);
+            } else {
+              setDialogState(
+                () => errorText = "Those aren't the demo credentials.",
+              );
+            }
+          }
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            title: const Text("Demo access"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  "Sample data for app review. No WatCard account is "
+                  "contacted and no network request is made.",
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: userController,
+                  autofocus: true,
+                  autocorrect: false,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(labelText: "Username"),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: passController,
+                  obscureText: true,
+                  autocorrect: false,
+                  decoration: InputDecoration(
+                    labelText: "Password",
+                    errorText: errorText,
+                  ),
+                  onSubmitted: (_) => submit(),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text("Cancel"),
+              ),
+              FilledButton(onPressed: submit, child: const Text("Continue")),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+    await enterDemoMode();
+    if (!mounted) return;
+    _tryFetch(kDemoSessionHeader, fromLogin: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -118,25 +197,61 @@ class _LoadingPageState extends State<LoadingPage> {
     // screen once we know the user has to tap Sign In.
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            // Stretch to full width so content stays centred in the busy
-            // state too (which has no full-width child to expand the column).
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Spacer(flex: 3),
-              _Brandmark(scheme: scheme),
-              const Spacer(flex: 4),
-              if (_busy)
-                _busyFooter(scheme)
-              else
-                _signInFooter(scheme),
-              const Spacer(flex: 2),
-            ],
-          ),
+        child: Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
+                // Stretch to full width so content stays centred in the busy
+                // state too (which has no full-width child to expand the
+                // column).
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Spacer(flex: 3),
+                  _Brandmark(scheme: scheme),
+                  const Spacer(flex: 4),
+                  if (_busy)
+                    _busyFooter(scheme)
+                  else
+                    _signInFooter(scheme),
+                  const Spacer(flex: 2),
+                ],
+              ),
+            ),
+            // Settings affordance, overlaid rather than placed in an AppBar so
+            // the brandmark stays vertically centred on the splash.
+            Positioned(top: 4, right: 4, child: _settingsMenu(scheme)),
+          ],
         ),
       ),
+    );
+  }
+
+  /// Gear icon opening a small menu. Its only entry is demo access, which is
+  /// how a Google Play reviewer reaches the sample dataset without a real
+  /// WatCard account. Tucked behind a menu so it doesn't compete with the
+  /// primary Sign In action for ordinary users.
+  Widget _settingsMenu(ColorScheme scheme) {
+    return PopupMenuButton<String>(
+      tooltip: "Settings",
+      icon: Icon(Icons.settings_outlined, color: scheme.onSurfaceVariant),
+      position: PopupMenuPosition.under,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      onSelected: (value) {
+        if (value == 'demo') _showDemoSignIn();
+      },
+      itemBuilder: (context) => const [
+        PopupMenuItem<String>(
+          value: 'demo',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            leading: Icon(Icons.science_outlined),
+            title: Text("Demo account"),
+            subtitle: Text("Browse sample data"),
+          ),
+        ),
+      ],
     );
   }
 

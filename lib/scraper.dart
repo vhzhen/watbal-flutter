@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:watbal/debug_log.dart';
+import 'package:watbal/demo_data.dart';
 
 /// SharedPreferences key holding the raw account name (e.g. "FLEXIBLE") the
 /// user chose to display on the home-screen widgets. Null/absent means "the
@@ -327,6 +328,8 @@ class Scraper {
   /// as-is (any length, letters or digits); the two fields are known to match
   /// before we get here.
   Future<void> changeCardPin(String cookies, String pin) async {
+    // Demo mode has no account to change; report success without a request.
+    if (isDemoSession(cookies)) return;
     final token = await _token(cookies);
     final req = http.Request(
       "POST",
@@ -353,6 +356,8 @@ class Scraper {
   /// Lightweight session ping. Two small requests, no balance parse. Use this
   /// when you only want to keep the session warm.
   Future<void> keepAlive(String cookies) async {
+    // No server-side session to keep warm in demo mode.
+    if (isDemoSession(cookies)) return;
     final token = await _token(cookies);
     await http.post(
       Uri.parse("$_base/Layout/KeepAlive"),
@@ -365,6 +370,12 @@ class Scraper {
   /// user-selected account's balance to the home-screen widgets, and returns
   /// the full list (a user may hold more than one account type).
   Future<List<AccountBalance>> fetchBalances(String cookies) async {
+    if (isDemoSession(cookies)) {
+      final accounts = demoAccounts();
+      // Still push to the widget so the home-screen widget works in the demo.
+      await pushSelectedBalanceToWidget(accounts);
+      return accounts;
+    }
     final token = await _token(cookies);
 
     // KeepAlive is folded in so a single fetch also resets the sliding-auth
@@ -446,6 +457,11 @@ class Scraper {
   /// returns the full history. First run (empty cache) fetches everything
   /// since [_txnEpoch].
   Future<List<Transaction>> syncTransactions(String cookies) async {
+    // Demo mode returns the fabricated history and deliberately does NOT write
+    // it to the on-disk cache, so demo data can never be mistaken for, or
+    // merged into, a real user's history.
+    if (isDemoSession(cookies)) return demoTransactions();
+
     final cached = await loadCachedTransactions();
 
     DateTime? newest;
@@ -501,6 +517,12 @@ class Scraper {
     required DateTime from,
     required DateTime to,
   }) async {
+    if (isDemoSession(cookies)) {
+      return demoTransactions().where((t) {
+        final d = t.parsedDate;
+        return d != null && !d.isBefore(from) && !d.isAfter(to);
+      }).toList();
+    }
     final token = await _token(cookies);
 
     final res = await http.post(
@@ -567,6 +589,10 @@ class Scraper {
     Iterable<String> seenBalanceIds = const [],
     String? token,
   }) async {
+    // Demo accounts have fixed IDs, so attribution resolves immediately and
+    // each account shows its own transactions and analytics.
+    if (isDemoSession(cookies)) return demoBalanceIdMap();
+
     var map = _balanceIdCache;
     if (map == null) {
       final prefs = await SharedPreferences.getInstance();
@@ -602,6 +628,7 @@ class Scraper {
     String cookies, {
     String? token,
   }) async {
+    if (isDemoSession(cookies)) return demoBalanceIdMap();
     token ??= await _token(cookies);
 
     final res = await http.post(

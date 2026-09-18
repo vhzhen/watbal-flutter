@@ -9,6 +9,7 @@ import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:watbal/debug_log.dart';
+import 'package:watbal/demo_data.dart';
 import 'package:watbal/scraper.dart';
 
 const String _dashboardUrl =
@@ -74,6 +75,22 @@ Future<void> clearSession() async {
 }
 
 Future<String?> loadSession() => _sessionStore.load();
+
+/// Enters demo mode by storing the demo sentinel as the active session.
+///
+/// Any previously cached real data is wiped first: the cache is keyed to
+/// whoever was signed in before, and the demo must never display — or be
+/// confused with — a real person's transactions. From here on every scrape is
+/// answered from [demoTransactions] and no network request is made.
+///
+/// Leaving demo mode is just signing out, which clears the sentinel like any
+/// other session.
+Future<void> enterDemoMode() async {
+  await clearScraperCache();
+  await clearWidgetData();
+  await saveSession(kDemoSessionHeader);
+  await DebugLog.log('demo: entered demo mode (no network from here)');
+}
 
 // ─────────────────────────── session persistence ───────────────────────────
 
