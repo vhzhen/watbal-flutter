@@ -208,10 +208,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// "12 transactions" under the balance — doubles as the tap affordance.
-  /// Blank until the first transactions fetch lands.
+  /// Blank until the first transactions fetch lands, and also blank when the
+  /// rows can't be attributed to this specific account (see
+  /// [_HomeController.isAttributable]) — showing every account the same total
+  /// is worse than showing none.
   String? _caption(AccountBalance account) {
     final txns = _data.txnsFor(account);
     if (txns == null) return null;
+    if (!_data.isAttributable(account)) return null;
     return "${txns.length} transaction${txns.length == 1 ? '' : 's'}";
   }
 }
@@ -391,6 +395,16 @@ class _HomeController extends ChangeNotifier {
   AccountBalance current(AccountBalance account) => _accounts.firstWhere(
     (a) => a.name == account.name,
     orElse: () => account,
+  );
+
+  /// Whether the rows [txnsFor] returns for [account] are genuinely *this*
+  /// account's, as opposed to an undivided pile shared with other accounts.
+  /// See [isAccountAttributable] for the rule and why the all-unknown case is
+  /// common.
+  bool isAttributable(AccountBalance account) => isAccountAttributable(
+    accountName: account.name,
+    allAccountNames: _accounts.map((a) => a.name),
+    balanceIds: _balanceIds,
   );
 
   /// Transactions attributed to [account]. Null while the first fetch is in

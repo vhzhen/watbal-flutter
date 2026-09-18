@@ -72,6 +72,33 @@ Future<void> clearScraperCache() async {
   await prefs.remove(kBalanceIdMapKey);
 }
 
+/// Whether transactions can be attributed to [accountName] specifically,
+/// given the known account-name → balance-ID [balanceIds] map.
+///
+/// Transactions are split per account by the opaque balance ID on each row.
+/// An account whose own ID is known is always attributable. An account whose
+/// ID is unknown is still attributable when it is the *only* such account:
+/// every row claimed by the other accounts' known IDs can be subtracted, and
+/// whatever remains must belong to this one.
+///
+/// It is not attributable once two or more accounts have unknown IDs, because
+/// the leftover rows cannot be divided between them — any per-account figure
+/// derived from that set is fiction, and callers should show nothing instead.
+///
+/// The all-unknown case is reached whenever [Scraper.fetchBalanceIdMap] comes
+/// back empty, which happens more often than it looks: the site only prints an
+/// account's balance ID inside a transaction row of the *current statement*, so
+/// an account with no activity in the current statement period is unidentifiable
+/// even though the statement names it.
+bool isAccountAttributable({
+  required String accountName,
+  required Iterable<String> allAccountNames,
+  required Map<String, String> balanceIds,
+}) {
+  if (balanceIds[accountName] != null) return true;
+  return allAccountNames.where((n) => balanceIds[n] == null).length <= 1;
+}
+
 /// User-facing name for a raw scraped account name. The site's internal
 /// "FLEXIBLE" reads as "FLEX DOLLARS"; any other account is title-cased.
 String accountDisplayName(String name) {
