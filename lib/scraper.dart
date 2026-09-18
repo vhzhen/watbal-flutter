@@ -26,6 +26,39 @@ const String kBalanceIdMapKey = 'account_balance_ids';
 /// the newest cached one. Wiped by [clearScraperCache] on sign-out.
 const String kCachedTransactionsKey = 'cached_transactions';
 
+/// Financial keys the scraper pushes into the shared widget store. `app_theme`
+/// is deliberately excluded — it's a cosmetic preference, not account data.
+const List<String> _widgetDataKeys = [
+  'balance_text',
+  'balance_label',
+  'transactions_json',
+  'last_updated',
+];
+
+/// Wipes the balance + recent-transaction data out of the home-screen widget
+/// store and repaints the widgets so they fall back to their placeholder state.
+///
+/// Must run on sign-out. `home_widget` persists these values in plaintext
+/// platform storage (SharedPreferences on Android, the shared app-group
+/// UserDefaults on iOS) and the widget renders whatever is there regardless of
+/// whether a session still exists. Without this, signing out leaves the
+/// previous user's balance and last 8 transactions painted on the home screen
+/// indefinitely — visible to whoever holds the device next, and to anyone
+/// glancing at a locked screen.
+Future<void> clearWidgetData() async {
+  try {
+    await HomeWidget.setAppGroupId(Scraper._appGroupId);
+    for (final key in _widgetDataKeys) {
+      await HomeWidget.saveWidgetData<String>(key, null);
+    }
+    await reloadWatBalWidgets();
+    await DebugLog.log('widget: cleared data on sign-out');
+  } catch (e) {
+    // Non-fatal: no widget host / no app group configured.
+    await DebugLog.log('widget: clear failed: $e');
+  }
+}
+
 /// Wipes all locally cached scrape state — the transaction cache and the
 /// account ↔ balance-ID map, both on disk and in the isolate-static memos.
 /// Must be called on sign-out: the next user's data must never merge into

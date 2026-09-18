@@ -26,11 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-	</dict>
+	<!-- App Transport Security is left at its secure default (arbitrary
+	     cleartext loads DISABLED). Every endpoint this app touches is HTTPS
+	     (secure.touchnet.net, watcard.uwaterloo.ca, and the UW SSO/DUO chain),
+	     so no exception is needed. Do not add NSAllowsArbitraryLoads: it would
+	     let a network attacker downgrade the login/scrape traffic to HTTP and
+	     capture the session cookies that grant full account access. -->
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -37,11 +37,15 @@ class WatBalWidgetReceiver : HomeWidgetProvider() {
 
         // Tag: WatBalWidget — `adb logcat -s WatBalWidget` shows each render so
         // you can confirm the broadcast actually re-ran onUpdate and what time
-        // it painted.
-        Log.d(
-            "WatBalWidget",
-            "onUpdate ids=${appWidgetIds.toList()} balance=$balance \"$updated\"",
-        )
+        // it painted. Debug builds only: logcat is shared, system-wide, and
+        // captured in bug reports, so a release build must not narrate the
+        // user's balance into it.
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                "WatBalWidget",
+                "onUpdate ids=${appWidgetIds.toList()} balance=$balance \"$updated\"",
+            )
+        }
 
         for (id in appWidgetIds) {
             val views = RemoteViews(context.packageName, R.layout.watbal_widget)

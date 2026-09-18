@@ -12,8 +12,10 @@
 # 4. Build a release bundle:  flutter build appbundle --release
 #
 # With Google Play App Signing enabled (recommended), this key is your *upload*
-# key; Google holds the real app-signing key. If key.properties is absent the
-# build falls back to debug signing so `flutter run` still works.
+# key; Google holds the real app-signing key. If key.properties is absent,
+# release builds fail with an explanatory error rather than silently signing with
+# the public debug key; pass -PallowDebugSigning=true to override for local
+# testing only (never distribute such a build).
 
 storePassword=your-keystore-password
 keyPassword=your-key-password

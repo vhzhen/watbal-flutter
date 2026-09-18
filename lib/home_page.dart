@@ -5,6 +5,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:watbal/auth.dart';
+import 'package:watbal/disclaimer_page.dart';
 import 'package:watbal/log_viewer_page.dart';
 import 'package:watbal/main.dart';
 import 'package:watbal/meal_plan.dart';
@@ -2953,6 +2954,34 @@ class _SettingsViewState extends State<_SettingsView> {
                     onSelected: widget.data.refreshing
                         ? null
                         : (_) => _confirmResync(),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: "DISCLAIMER",
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "WatBal is unofficial and not affiliated with the University "
+                "of Waterloo. Covers what data is stored on your device.",
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ChoiceChip(
+                  label: const Text("View disclaimer"),
+                  selected: false,
+                  onSelected: (_) => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const DisclaimerPage()),
                   ),
                 ),
               ),

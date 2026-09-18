@@ -126,7 +126,14 @@ enum BalanceRefresher {
                         }
                         DispatchQueue.main.async {
                             WidgetCenter.shared.reloadAllTimelines()
-                            NSLog("[BalanceRefresher] OK: \(amount)")
+                            // Only log the amount in debug builds: NSLog writes
+                            // to the shared device console/sysdiagnose, so a
+                            // release build shouldn't emit the user's balance.
+                            #if DEBUG
+                                NSLog("[BalanceRefresher] OK: \(amount)")
+                            #else
+                                NSLog("[BalanceRefresher] OK")
+                            #endif
                             completion(true)
                         }
                     }

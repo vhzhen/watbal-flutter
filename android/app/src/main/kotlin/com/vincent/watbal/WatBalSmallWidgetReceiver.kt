@@ -31,10 +31,14 @@ class WatBalSmallWidgetReceiver : HomeWidgetProvider() {
         val label = widgetData.getString("balance_label", null) ?: "WatBal"
         val updated = formatUpdated(widgetData.getString("last_updated", null))
 
-        Log.d(
-            "WatBalWidget",
-            "small onUpdate ids=${appWidgetIds.toList()} balance=$balance \"$updated\"",
-        )
+        // Debug builds only — logcat is system-wide and lands in bug reports,
+        // so a release build must not log the user's balance.
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                "WatBalWidget",
+                "small onUpdate ids=${appWidgetIds.toList()} balance=$balance \"$updated\"",
+            )
+        }
 
         for (id in appWidgetIds) {
             val views = RemoteViews(context.packageName, R.layout.watbal_widget_small)

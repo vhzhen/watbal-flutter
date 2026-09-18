@@ -45,6 +45,23 @@ app.*.map.json
 /android/app/release
 
 
+# Release signing material — NEVER commit. `key.properties` holds the keystore
+# passwords and the .jks holds the private key that authorises Play Store
+# updates; leaking either lets someone else publish as you (and it can't be
+# rotated once Play has it as your upload key without contacting Google).
+# `key.properties.example` is a different filename, so it stays tracked.
+key.properties
+android/key.properties
+*.jks
+*.keystore
+*.p12
+*.pepk
+
+# Local secrets / env
+.env
+.env.*
+!.env.example
+
 # test files
 *test.py
 

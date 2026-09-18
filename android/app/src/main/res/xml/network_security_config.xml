@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network policy for release traffic.
+
+  The app replays a live TouchNet session cookie that grants full access to the
+  user's WatCard account, so the transport must not be downgradable:
+
+  * cleartextTrafficPermitted="false" — no plaintext HTTP, ever. This is already
+    the platform default at targetSdk 28+, but stating it explicitly means a
+    future dependency (or a manifest merge from a library) can't quietly flip it
+    back on.
+  * Only the system CA store is trusted. Omitting the "user" trust anchor means
+    a CA manually installed on the device — the standard way an interception
+    proxy is set up, and a common malware/stalkerware step — cannot be used to
+    decrypt the app's traffic.
+
+  Note the debug overlay below: `flutter run` builds still trust user CAs so a
+  developer can inspect traffic with mitmproxy/Charles. That block is compiled
+  into debug builds only and has no effect on what ships.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

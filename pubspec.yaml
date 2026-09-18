@@ -1,5 +1,5 @@
 name: watbal
-description: "A new Flutter project."
+description: "Track University of Waterloo WatCard meal plan balances and transaction history, with home-screen widgets."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

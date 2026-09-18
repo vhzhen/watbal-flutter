@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -312,10 +313,22 @@ class _WatBalAppState extends State<WatBalApp> with WidgetsBindingObserver {
 
 const String _refreshTaskId = 'com.vincent.watbal.refresh';
 
-/// Compact one-line summary of scraped accounts for the debug log, e.g.
-/// "FLEXIBLE=$0.44, MEAL=$120.00".
-String _logBalances(List<AccountBalance> accounts) =>
-    accounts.map((a) => "${a.name}=${a.amount}").join(", ");
+/// Compact one-line summary of scraped accounts for the debug log.
+///
+/// In debug builds this includes the amounts ("FLEXIBLE=$0.44, MEAL=$120.00")
+/// because that's the whole point when diagnosing a background refresh. In
+/// release builds the amounts are redacted to just the account names and a
+/// count ("FLEXIBLE, MEAL (2 accounts)"): the log is a plaintext file that
+/// survives in app storage and is readable — and copyable to the clipboard —
+/// from the in-app log viewer, so it shouldn't accumulate a user's balance
+/// history. The names alone still confirm the scrape parsed correctly.
+String _logBalances(List<AccountBalance> accounts) {
+  if (kDebugMode) {
+    return accounts.map((a) => "${a.name}=${a.amount}").join(", ");
+  }
+  final names = accounts.map((a) => a.name).join(", ");
+  return "$names (${accounts.length} account${accounts.length == 1 ? '' : 's'})";
+}
 
 /// Background isolate entry point. Re-queues itself, then does a best-effort
 /// balance + transactions refresh. If the session has expired (no token in

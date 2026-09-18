@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart' as fss;
 import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:watbal/debug_log.dart';
 import 'package:watbal/scraper.dart';
 
 const String _dashboardUrl =
@@ -63,6 +64,12 @@ Future<void> clearSession() async {
   // selection + term dates are intentionally *kept* so a returning user doesn't
   // have to reconfigure them every sign-in.
   await clearScraperCache();
+  // The home-screen widget renders its own persisted copy of the balance and
+  // recent transactions, independent of any session. Wipe it too, or the signed
+  // -out device keeps displaying the previous user's account data.
+  await clearWidgetData();
+  // The debug log records scraped balances; it outlives the session otherwise.
+  await DebugLog.clear();
   await CookieManager.instance().deleteAllCookies();
 }
 
