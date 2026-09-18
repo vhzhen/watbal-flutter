@@ -72,6 +72,30 @@ Future<void> clearScraperCache() async {
   await prefs.remove(kBalanceIdMapKey);
 }
 
+/// The terminal name the site stamps on web-originated activity (online
+/// deposits, transfers, account adjustments) rather than a physical place the
+/// user tapped their card at.
+const String kWebAppsTerminal = 'WEBAPPS';
+
+/// Drops rows whose terminal is [kWebAppsTerminal].
+///
+/// Used by the Analytics tab's "Top Places" and "Spending Patterns" only. Those
+/// answer *where* and *when* the user spends — questions a website transaction
+/// has no meaningful answer to. Left in, it ranks as a top "place", and its
+/// timestamp skews the weekday/time-of-day buckets toward whenever the user
+/// happened to be at a computer.
+///
+/// Deliberately NOT applied to the month summary, the balance trend, the
+/// transaction lists, or the widget: those must account for every movement of
+/// money or the figures stop reconciling with the real balance.
+///
+/// Matching goes through [Transaction.terminalLabel], so it handles the site's
+/// "00024 : WEBAPPS" prefixed form as well as a bare "WEBAPPS", and is
+/// case-insensitive.
+Iterable<Transaction> withoutWebApps(Iterable<Transaction> txns) => txns.where(
+  (t) => t.terminalLabel.trim().toUpperCase() != kWebAppsTerminal,
+);
+
 /// Whether transactions can be attributed to [accountName] specifically,
 /// given the known account-name → balance-ID [balanceIds] map.
 ///

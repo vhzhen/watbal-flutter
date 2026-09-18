@@ -1452,6 +1452,8 @@ class _AnalyticsViewState extends State<_AnalyticsView> {
 
     final filteredTxns =
         selected == null ? txns : (data.txnsFor(selected) ?? const []);
+    // Same rows minus WEBAPPS, for the two place/time cards only.
+    final placeTxns = withoutWebApps(filteredTxns).toList();
     final balance =
         selected == null ? data.totalBalance : (selected.amountValue ?? 0);
     final a = _Analytics.from(filteredTxns, balance);
@@ -1505,9 +1507,12 @@ class _AnalyticsViewState extends State<_AnalyticsView> {
           // draw-in animation with the new curve.
           _BalanceTrendCard(key: ValueKey(_account), a: a),
           const SizedBox(height: 16),
-          _TopMerchantsCard(txns: filteredTxns),
+          // These two are about physical spending habits, so the WEBAPPS
+          // pseudo-terminal is filtered out (see [_withoutWebApps]). The two
+          // cards above intentionally still count it.
+          _TopMerchantsCard(txns: placeTxns),
           const SizedBox(height: 16),
-          _SpendingPatternsCard(txns: filteredTxns),
+          _SpendingPatternsCard(txns: placeTxns),
         ],
       ],
     );
