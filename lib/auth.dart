@@ -92,6 +92,41 @@ Future<void> enterDemoMode() async {
   await DebugLog.log('demo: entered demo mode (no network from here)');
 }
 
+// ───────────────────────── real sign-in history ────────────────────────────
+
+/// Sticky record that this install has authenticated against the real
+/// University of Waterloo sign-in at least once.
+///
+/// Deliberately **not** cleared by [clearSession]: once someone has proven they
+/// have a real WatCard account, they should never be asked to qualify again, and
+/// should never be routed anywhere near the demo. Signing out drops the session
+/// but keeps this, so "Sign In" goes straight back to the UW flow.
+const String _realSignInKey = 'has_real_sign_in';
+
+/// Whether a real (non-demo) sign-in has ever succeeded on this install.
+Future<bool> hasEverSignedInForReal() async =>
+    (await SharedPreferences.getInstance()).getBool(_realSignInKey) ?? false;
+
+/// Records that a real sign-in succeeded. Idempotent.
+Future<void> markRealSignIn() async =>
+    (await SharedPreferences.getInstance()).setBool(_realSignInKey, true);
+
+/// Whether [email] is a University of Waterloo address, and therefore belongs in
+/// the real sign-in flow.
+///
+/// Accepts the plain `uwaterloo.ca` domain and any subdomain of it (students are
+/// variously issued `@uwaterloo.ca` and `@edu.uwaterloo.ca`), case-insensitively
+/// and tolerating surrounding whitespace from a paste. Everything before the `@`
+/// is ignored — this is a routing check, not an identity check; the University's
+/// own login page is what actually authenticates the person.
+bool isUwaterlooEmail(String email) {
+  final at = email.trim().toLowerCase();
+  final i = at.lastIndexOf('@');
+  if (i <= 0 || i == at.length - 1) return false;
+  final domain = at.substring(i + 1);
+  return domain == 'uwaterloo.ca' || domain.endsWith('.uwaterloo.ca');
+}
+
 // ─────────────────────────── session persistence ───────────────────────────
 
 /// Single-value key/value contract backing the session cookie header. Kept

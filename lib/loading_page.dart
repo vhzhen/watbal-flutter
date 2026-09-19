@@ -26,19 +26,61 @@ class _LoadingPageState extends State<LoadingPage> {
   String _status = "Checking your session…";
   bool _busy = true;
 
+  /// Whether this user must qualify an email address before signing in. False
+  /// once a real sign-in has ever succeeded, which collapses the screen back to
+  /// a single "Sign In" button that goes straight to the University flow.
+  bool _requireEmail = false;
+
+  /// Set once the entered address is the demo one, revealing the password field.
+  bool _askPassword = false;
+
+  final _emailController = TextEditingController();
+  final _passController = TextEditingController();
+  String? _formError;
+
   @override
   void initState() {
     super.initState();
     _start();
   }
 
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passController.dispose();
+    super.dispose();
+  }
+
   Future<void> _start() async {
     final saved = await loadSession();
     if (saved != null) {
+      // An existing real session is itself proof of a past real sign-in. This
+      // also migrates users who installed before the email gate existed, so
+      // they're never asked to qualify an address they've already used.
+      if (!isDemoSession(saved)) await markRealSignIn();
       _tryFetch(saved);
-    } else {
-      _trySilentThenPrompt();
+      return;
     }
+
+    // No session. Only drive straight into the University flow for someone who
+    // has already completed a real sign-in — for them the silent re-auth is the
+    // whole point, since it usually restores the session with no UI at all.
+    //
+    // Everyone else must go through the email gate, so we stop here and let the
+    // Sign In button start it. Without this, landing on this screen would shove
+    // the University's login page in front of someone who never asked for it —
+    // which is exactly what happened after signing out of the demo, and on a
+    // brand-new install it skipped the gate entirely.
+    if (await hasEverSignedInForReal()) {
+      _trySilentThenPrompt();
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _requireEmail = true;
+      _status = "Sign in to see your balance.";
+    });
   }
 
   Future<void> _tryFetch(String cookies, {bool fromLogin = false}) async {
@@ -48,6 +90,9 @@ class _LoadingPageState extends State<LoadingPage> {
     });
     try {
       final accounts = await Scraper().fetchBalances(cookies);
+      // Only a real session qualifies: a demo sign-in must not unlock the
+      // straight-to-UW path, so demo users keep seeing the email step.
+      if (!isDemoSession(cookies)) await markRealSignIn();
       if (mounted) widget.onLoaded(accounts);
     } catch (_) {
       if (!mounted) return;
@@ -111,79 +156,38 @@ class _LoadingPageState extends State<LoadingPage> {
     }
   }
 
-  /// Demo sign-in, for Google Play's app-review credentials. Accepts only
-  /// [kDemoUsername] / [kDemoPassword]; anything else is rejected so this can't
-  /// be mistaken for a real sign-in form. On success the app switches to the
-  /// fabricated demo dataset and makes no further network requests.
-  Future<void> _showDemoSignIn() async {
-    final userController = TextEditingController();
-    final passController = TextEditingController();
-    String? errorText;
+  /// Handles the inline email field.
+  ///
+  /// A University of Waterloo address hands off to the real sign-in (which is
+  /// necessarily a popup — it's the University's own page in a WebView). The
+  /// demo address reveals the password field below. Anything else is rejected
+  /// inline, so a student who mistypes their address is told their email is
+  /// wrong rather than being asked for a password that could never work.
+  void _submitEmail() {
+    final email = _emailController.text;
+    if (isUwaterlooEmail(email)) {
+      FocusScope.of(context).unfocus();
+      _trySilentThenPrompt();
+      return;
+    }
+    if (isDemoUsername(email)) {
+      setState(() {
+        _askPassword = true;
+        _formError = null;
+      });
+      return;
+    }
+    setState(() => _formError = "Invalid email address");
+  }
 
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) {
-          void submit() {
-            if (isDemoLogin(userController.text, passController.text)) {
-              Navigator.of(dialogContext).pop(true);
-            } else {
-              setDialogState(
-                () => errorText = "Those aren't the demo credentials.",
-              );
-            }
-          }
-
-          return AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            title: const Text("Demo access"),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  "Sample data for app review. No WatCard account is "
-                  "contacted and no network request is made.",
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: userController,
-                  autofocus: true,
-                  autocorrect: false,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(labelText: "Username"),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: passController,
-                  obscureText: true,
-                  autocorrect: false,
-                  decoration: InputDecoration(
-                    labelText: "Password",
-                    errorText: errorText,
-                  ),
-                  onSubmitted: (_) => submit(),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(false),
-                child: const Text("Cancel"),
-              ),
-              FilledButton(onPressed: submit, child: const Text("Continue")),
-            ],
-          );
-        },
-      ),
-    );
-
-    if (ok != true || !mounted) return;
+  /// Handles the inline demo password field. Only the demo password can reach
+  /// this; nothing typed here is ever sent anywhere.
+  Future<void> _submitPassword() async {
+    if (!isDemoLogin(_emailController.text, _passController.text)) {
+      setState(() => _formError = "Incorrect password.");
+      return;
+    }
+    FocusScope.of(context).unfocus();
     await enterDemoMode();
     if (!mounted) return;
     _tryFetch(kDemoSessionHeader, fromLogin: true);
@@ -197,61 +201,22 @@ class _LoadingPageState extends State<LoadingPage> {
     // screen once we know the user has to tap Sign In.
     return Scaffold(
       body: SafeArea(
-        child: Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Column(
-                // Stretch to full width so content stays centred in the busy
-                // state too (which has no full-width child to expand the
-                // column).
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Spacer(flex: 3),
-                  _Brandmark(scheme: scheme),
-                  const Spacer(flex: 4),
-                  if (_busy)
-                    _busyFooter(scheme)
-                  else
-                    _signInFooter(scheme),
-                  const Spacer(flex: 2),
-                ],
-              ),
-            ),
-            // Settings affordance, overlaid rather than placed in an AppBar so
-            // the brandmark stays vertically centred on the splash.
-            Positioned(top: 4, right: 4, child: _settingsMenu(scheme)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Gear icon opening a small menu. Its only entry is demo access, which is
-  /// how a Google Play reviewer reaches the sample dataset without a real
-  /// WatCard account. Tucked behind a menu so it doesn't compete with the
-  /// primary Sign In action for ordinary users.
-  Widget _settingsMenu(ColorScheme scheme) {
-    return PopupMenuButton<String>(
-      tooltip: "Settings",
-      icon: Icon(Icons.settings_outlined, color: scheme.onSurfaceVariant),
-      position: PopupMenuPosition.under,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      onSelected: (value) {
-        if (value == 'demo') _showDemoSignIn();
-      },
-      itemBuilder: (context) => const [
-        PopupMenuItem<String>(
-          value: 'demo',
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-            leading: Icon(Icons.science_outlined),
-            title: Text("Demo account"),
-            subtitle: Text("Browse sample data"),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            // Stretch to full width so content stays centred in the busy
+            // state too (which has no full-width child to expand the column).
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Spacer(flex: 3),
+              _Brandmark(scheme: scheme),
+              const Spacer(flex: 4),
+              if (_busy) _busyFooter(scheme) else _signInFooter(scheme),
+              const Spacer(flex: 2),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 
@@ -279,7 +244,12 @@ class _LoadingPageState extends State<LoadingPage> {
     );
   }
 
-  /// Sign-in footer: a status line + a full-width primary Sign In button.
+  /// Sign-in footer.
+  ///
+  /// Returning users (anyone who has completed a real sign-in) get a single
+  /// Sign In button straight into the University flow. First-timers get the
+  /// email field inline on the page instead, which then reveals a password field
+  /// if the address is the demo one.
   Widget _signInFooter(ColorScheme scheme) {
     return Column(
       children: [
@@ -289,24 +259,87 @@ class _LoadingPageState extends State<LoadingPage> {
           style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15),
         ),
         const SizedBox(height: 24),
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton(
-            onPressed: _trySilentThenPrompt,
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-              textStyle: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            child: const Text("Sign In"),
+        if (_requireEmail)
+          ..._emailForm()
+        else
+          _primaryButton(label: "Sign In", onPressed: _trySilentThenPrompt),
+      ],
+    );
+  }
+
+  /// The inline gate: an email field, plus a password field once the demo
+  /// address has been entered.
+  List<Widget> _emailForm() {
+    return [
+      TextField(
+        controller: _emailController,
+        autocorrect: false,
+        keyboardType: TextInputType.emailAddress,
+        textInputAction: TextInputAction.next,
+        decoration: InputDecoration(
+          labelText: "Email",
+          hintText: "",
+          border: const OutlineInputBorder(),
+          errorText: _askPassword ? null : _formError,
+        ),
+        // The field stays editable during the password step. Disabling it also
+        // disables everything in its decoration, which is why the old "Change"
+        // button couldn't be tapped (and why the field looked greyed out).
+        // Editing the address away from the demo one collapses the password
+        // field instead, so a password can never be submitted against an
+        // address it doesn't belong to.
+        onChanged: (value) {
+          if (_askPassword && !isDemoUsername(value)) {
+            setState(() {
+              _askPassword = false;
+              _formError = null;
+              _passController.clear();
+            });
+          }
+        },
+        onSubmitted: (_) => _submitEmail(),
+      ),
+      if (_askPassword) ...[
+        const SizedBox(height: 12),
+        TextField(
+          controller: _passController,
+          autofocus: true,
+          obscureText: true,
+          autocorrect: false,
+          textInputAction: TextInputAction.go,
+          decoration: InputDecoration(
+            labelText: "Password",
+            border: const OutlineInputBorder(),
+            errorText: _formError,
           ),
+          onSubmitted: (_) => _submitPassword(),
         ),
       ],
+      const SizedBox(height: 20),
+      _primaryButton(
+        label: _askPassword ? "Continue" : "Next",
+        onPressed: _askPassword ? _submitPassword : _submitEmail,
+      ),
+    ];
+  }
+
+  Widget _primaryButton({
+    required String label,
+    required VoidCallback onPressed,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        child: Text(label),
+      ),
     );
   }
 }

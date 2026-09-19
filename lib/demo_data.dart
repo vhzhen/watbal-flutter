@@ -21,10 +21,18 @@ import 'package:watbal/scraper.dart';
 /// Credentials to give Google Play. Intentionally not secret: they unlock
 /// nothing but the fabricated data in this file.
 const String kDemoUsername = 'demo@watbal.app';
-const String kDemoPassword = 'WatBalDemo2026';
+const String kDemoPassword = 'watbalrocks';
 
 /// Sentinel stored in place of a session cookie header while in demo mode.
 const String kDemoSessionHeader = 'watbal-demo-mode-no-network';
+
+/// Whether [user] is the demo username, ignoring the password.
+///
+/// Used by the sign-in email gate to decide whether to advance to the password
+/// step. Kept separate from [isDemoLogin] so an unrecognised address can be
+/// rejected as an invalid email *before* anyone is asked for a password.
+bool isDemoUsername(String user) =>
+    user.trim().toLowerCase() == kDemoUsername;
 
 /// Whether [user] / [pass] are the demo credentials. Username comparison is
 /// case-insensitive and trimmed, since reviewers typically paste it.
