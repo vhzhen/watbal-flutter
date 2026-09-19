@@ -336,7 +336,16 @@ class _LoadingPageState extends State<LoadingPage> {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          // Derived from the theme rather than written as a bare TextStyle: a
+          // literal with a null fontFamily doesn't inherit the app's Typ1451
+          // face, it falls back to the platform default, which made this the
+          // only button in the app rendering in a different font. titleMedium
+          // keeps Typ1451 (only the display/headline/titleLarge slots are
+          // remapped to BureauGrot).
+          textStyle: Theme.of(context).textTheme.titleMedium?.copyWith(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         child: Text(label),
       ),
