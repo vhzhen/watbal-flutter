@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -42,8 +43,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late final _HomeController _data;
 
-  // Bottom-nav selection. Visual only for now — tapping highlights a tab but
-  // doesn't yet change what's shown.
+  // Bottom-nav selection: which tab body [build] renders (0 = dashboard).
   int _navIndex = 0;
 
   @override
@@ -634,7 +634,10 @@ class _AccountDetailPageState extends State<_AccountDetailPage> {
           delegate: SliverChildBuilderDelegate((context, i) {
             final row = rows[i];
             if (row is String) return _DateHeader(label: row);
-            return _TxnTile(t: row as Transaction);
+            return _TxnTile(
+              t: row as Transaction,
+              accountName: widget.data.current(widget.account).displayName,
+            );
           }, childCount: rows.length),
         ),
       ),
@@ -1222,9 +1225,31 @@ const List<String> _monthAbbr = [
   'Dec',
 ];
 
+const List<String> _weekdayAbbr = [
+  'Mon',
+  'Tue',
+  'Wed',
+  'Thu',
+  'Fri',
+  'Sat',
+  'Sun',
+];
+
 /// "Apr 20, 2027" — always includes the year (used for term dates).
 String _monthDayYear(DateTime d) =>
     "${_monthAbbr[d.month - 1]} ${d.day}, ${d.year}";
+
+/// "12:34 PM" — the site reports minute precision, so seconds are dropped.
+String _time(DateTime d) {
+  final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
+  final m = d.minute.toString().padLeft(2, '0');
+  return "$h:$m ${d.hour < 12 ? 'AM' : 'PM'}";
+}
+
+/// "Sat, Jun 14, 2026 at 12:34 PM" — the unabbreviated stamp for the
+/// transaction detail sheet, where "Today" isn't specific enough.
+String _fullDateTime(DateTime d) =>
+    "${_weekdayAbbr[d.weekday - 1]}, ${_monthDayYear(d)} at ${_time(d)}";
 
 /// "Today" / "Yesterday" / "Mon, Jun 14" (with year if not the current one).
 String _dayLabel(DateTime? d) {
@@ -1235,22 +1260,8 @@ String _dayLabel(DateTime? d) {
   final diff = today.difference(day).inDays;
   if (diff == 0) return "Today";
   if (diff == 1) return "Yesterday";
-  const wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const mo = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
-  final base = "${wd[day.weekday - 1]}, ${mo[day.month - 1]} ${day.day}";
+  final base =
+      "${_weekdayAbbr[day.weekday - 1]}, ${_monthAbbr[day.month - 1]} ${day.day}";
   return day.year == today.year ? base : "$base, ${day.year}";
 }
 
@@ -1338,7 +1349,12 @@ class _DateHeader extends StatelessWidget {
 
 class _TxnTile extends StatelessWidget {
   final Transaction t;
-  const _TxnTile({required this.t});
+
+  /// Display name of the account this row was attributed to, shown in the
+  /// detail sheet.
+  final String accountName;
+
+  const _TxnTile({required this.t, required this.accountName});
 
   @override
   Widget build(BuildContext context) {
@@ -1352,68 +1368,219 @@ class _TxnTile extends StatelessWidget {
       if (t.label.isNotEmpty) t.label,
     ];
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 7),
-      child: Row(
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
+    return InkWell(
+      onTap: () => _showDetails(context),
+      borderRadius: BorderRadius.circular(14),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                debit ? Icons.arrow_downward : Icons.arrow_upward,
+                color: accent,
+                size: 18,
+              ),
             ),
-            child: Icon(
-              debit ? Icons.arrow_downward : Icons.arrow_upward,
-              color: accent,
-              size: 18,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  t.terminalLabel.isEmpty ? "Transaction" : t.terminalLabel,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 15,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    t.terminalLabel.isEmpty ? "Transaction" : t.terminalLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitleParts.join("  ·  "),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: scheme.onSurfaceVariant,
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitleParts.join("  ·  "),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            t.displayAmount,
-            style: TextStyle(
-              fontWeight: FontWeight.w700,
-              fontSize: 15,
-              color: accent,
+            const SizedBox(width: 8),
+            Text(
+              t.displayAmount,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 15,
+                color: accent,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  String _time(DateTime d) {
-    final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
-    final m = d.minute.toString().padLeft(2, '0');
-    return "$h:$m ${d.hour < 12 ? 'AM' : 'PM'}";
+  void _showDetails(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => _TxnDetailSheet(t: t, accountName: accountName),
+    );
+  }
+}
+
+/// Label/value pairs describing [t] for the detail sheet, in display order.
+/// Fields the site left empty are dropped rather than rendered blank, and an
+/// unparseable date falls back to the raw scraped string — the same tolerance
+/// the list rows have. Public so it can be tested without pumping the sheet.
+List<(String, String)> txnDetailFields(Transaction t, String accountName) {
+  final d = t.parsedDate;
+  return [
+    ("When", d != null ? _fullDateTime(d) : t.dateTime),
+    if (t.label.isNotEmpty) ("Type", t.label),
+    if (t.terminal.isNotEmpty) ("Terminal", t.terminal),
+    ("Account", accountName),
+  ].where((f) => f.$2.trim().isNotEmpty).toList();
+}
+
+/// The plaintext "Copy details" payload: merchant, amount, then one
+/// `Label: value` line per [txnDetailFields] entry.
+String txnDetailClipboardText(Transaction t, String accountName) => [
+  t.terminalLabel.isEmpty ? "Transaction" : t.terminalLabel,
+  t.displayAmount,
+  for (final (label, value) in txnDetailFields(t, accountName))
+    "$label: $value",
+].join("\n");
+
+/// Everything the scrape knows about one transaction. The row above is
+/// deliberately terse (one line of merchant, one of time/type), so this is
+/// where the unabbreviated timestamp, the raw terminal string — numeric
+/// prefix included — and the account attribution live. "Copy details" puts the
+/// same fields on the clipboard for disputing a charge.
+class _TxnDetailSheet extends StatelessWidget {
+  final Transaction t;
+  final String accountName;
+
+  const _TxnDetailSheet({required this.t, required this.accountName});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final debit = t.isDebit;
+    final accent = debit ? scheme.error : const Color(0xFF2E9E5B);
+    final fields = txnDetailFields(t, accountName);
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    debit ? Icons.arrow_downward : Icons.arrow_upward,
+                    color: accent,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    t.terminalLabel.isEmpty ? "Transaction" : t.terminalLabel,
+                    maxLines: 2,
+                    style: const TextStyle(
+                      fontFamily: 'BureauGrot',
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              t.displayAmount,
+              style: TextStyle(
+                fontFamily: 'BureauGrot',
+                fontSize: 40,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -1,
+                color: accent,
+              ),
+            ),
+            const SizedBox(height: 18),
+            for (final (label, value) in fields)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 92,
+                      child: Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w500,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Text(
+                        value,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              // Bordered chip matching the action chips elsewhere in the app.
+              child: ChoiceChip(
+                label: const Text("Copy details"),
+                selected: false,
+                avatar: const Icon(Icons.copy_rounded, size: 16),
+                onSelected: (_) async {
+                  await Clipboard.setData(
+                    ClipboardData(text: txnDetailClipboardText(t, accountName)),
+                  );
+                  if (!context.mounted) return;
+                  Navigator.of(context).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Details copied.")),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -3095,9 +3262,8 @@ class _ThemeSwatch extends StatelessWidget {
 
 // ─────────────────────────────── bottom nav bar ────────────────────────────
 
-/// Floating, rounded bottom navigation bar. Purely presentational for now:
-/// tapping a tab updates the highlighted selection but doesn't change what the
-/// screen shows.
+/// Floating, rounded bottom navigation bar. Stateless: the selected index and
+/// the tab switch both live in [_HomePageState], which swaps the body.
 class _BottomNavBar extends StatelessWidget {
   final int currentIndex;
   final ValueChanged<int> onTap;
